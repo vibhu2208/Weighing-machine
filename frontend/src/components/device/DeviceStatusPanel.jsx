@@ -13,7 +13,9 @@ function dotFor(key, devices) {
   const d = devices[key];
   if (!d) return 'disconnected';
   if (key === 'cloud') return d.connected ? 'connected' : 'waiting';
-  return d.connected ? 'connected' : 'disconnected';
+  if (d.connected) return 'connected';
+  if (d.reconnecting) return 'waiting';
+  return 'disconnected';
 }
 
 function formatLastSeen(iso) {
@@ -51,9 +53,31 @@ export default function DeviceStatusPanel() {
                       {dev.isStable ? ' · stable' : ' · unstable'}
                     </span>
                   )}
-                  {key === 'rfid' && dev.lastTag && (
-                    <span className="truncate max-w-[140px] inline-block">
+                  {key === 'rfid' && dev.lastScan && (
+                    <span className="block max-w-[160px]">
+                      <span className="truncate block font-mono">{dev.lastScan.tag}</span>
+                      {dev.lastScan.tid && (
+                        <span className="truncate block text-slate-600">
+                          TID {dev.lastScan.tid}
+                        </span>
+                      )}
+                      {(dev.lastScan.rssi != null || dev.lastScan.antenna != null) && (
+                        <span className="block text-slate-600">
+                          {dev.lastScan.rssi != null ? `RSSI ${dev.lastScan.rssi}` : ''}
+                          {dev.lastScan.rssi != null && dev.lastScan.antenna != null ? ' · ' : ''}
+                          {dev.lastScan.antenna != null ? `ANT${dev.lastScan.antenna}` : ''}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {key === 'rfid' && !dev.lastScan && dev.lastTag && (
+                    <span className="truncate max-w-[140px] inline-block font-mono">
                       {dev.lastTag}
+                    </span>
+                  )}
+                  {key === 'rfid' && !dev.connected && dev.lastError && (
+                    <span className="block max-w-[160px] text-amber-500/90 truncate" title={dev.lastError}>
+                      {dev.lastError}
                     </span>
                   )}
                   {key === 'cloud' && (

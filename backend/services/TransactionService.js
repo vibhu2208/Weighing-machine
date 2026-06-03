@@ -11,11 +11,34 @@ const {
 
 const OPEN_STATUSES = [TRANSACTION_STATUS.PENDING, TRANSACTION_STATUS.WEIGHING];
 
+const OPEN_TRIP_EXCLUDED_STATUSES = [
+  TRANSACTION_STATUS.ERROR,
+  TRANSACTION_STATUS.FAILED,
+];
+
+const OPEN_TRIP_EXCLUDED_SQL = OPEN_TRIP_EXCLUDED_STATUSES.map(() => '?').join(', ');
+
+function parseCameraSnapshotsField(raw) {
+  if (!raw) return { tare: [], gross: [] };
+  if (typeof raw === 'object') {
+    return { tare: raw.tare || [], gross: raw.gross || [] };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return { tare: parsed.tare || [], gross: parsed.gross || [] };
+  } catch {
+    return { tare: [], gross: [] };
+  }
+}
+
 function rowToTransaction(row) {
   if (!row) return null;
   const { vehicle_number_join, owner_name, transporter, vehicle_type, ...txn } =
     row;
   const result = { ...txn };
+  if (result.camera_snapshots != null) {
+    result.camera_snapshots = parseCameraSnapshotsField(result.camera_snapshots);
+  }
   if (vehicle_number_join || owner_name) {
     result.vehicle = {
       vehicle_number: vehicle_number_join || null,
@@ -41,17 +64,33 @@ const SELECT_WITH_VEHICLE = `
   )
 `;
 
+function ensureSlipCounter(db) {
+  const row = db.prepare('SELECT id FROM slip_counter LIMIT 1').get();
+  if (row) return;
+  const now = ts.now();
+  db.prepare(
+    `INSERT INTO slip_counter (prefix, current_value, updated_at)
+     VALUES ('WB', 1000, ?)`,
+  ).run(now);
+  logger.info('Initialised slip_counter', { prefix: 'WB', current_value: 1000 });
+}
+
 const TransactionService = {
+  ensureSlipCounter() {
+    ensureSlipCounter(getDb());
+  },
+
   generateSlipNumber() {
     const db = getDb();
     const allocate = db.transaction(() => {
+      ensureSlipCounter(db);
       const row = db
         .prepare(
           'SELECT id, prefix, current_value FROM slip_counter ORDER BY id LIMIT 1',
         )
         .get();
       if (!row) {
-        throw new Error('slip_counter is not initialised — run database seed');
+        throw new Error('slip_counter could not be initialised');
       }
       const nextValue = row.current_value + 1;
       const now = ts.now();
@@ -97,10 +136,84 @@ const TransactionService = {
   },
 
   findOpenForVehicle(truckNumber, rfidTag) {
-    return (
-      this.findOpenByTruck(truckNumber) ||
-      (rfidTag ? this.findOpenByRFID(rfidTag) : null)
+    return this.findOpenTripForVehicle(truckNumber, rfidTag);
+  },
+
+  /** Trip awaiting gross: gross not yet captured and not in error/failed. */
+  findOpenTripByTruck(truckNumber) {
+    if (!truckNumber) return null;
+    const normalized = String(truckNumber).trim().toUpperCase();
+    return rowToTransaction(
+      getDb()
+        .prepare(
+          `${SELECT_WITH_VEHICLE}
+           WHERE t.truck_number = ?
+             AND t.gross_weight IS NULL
+             AND t.status NOT IN (${OPEN_TRIP_EXCLUDED_SQL})
+           ORDER BY t.created_at DESC
+           LIMIT 1`,
+        )
+        .get(normalized, ...OPEN_TRIP_EXCLUDED_STATUSES),
     );
+  },
+
+  findOpenTripByRFID(rfidTag) {
+    if (!rfidTag) return null;
+    return rowToTransaction(
+      getDb()
+        .prepare(
+          `${SELECT_WITH_VEHICLE}
+           WHERE t.rfid_tag = ?
+             AND t.gross_weight IS NULL
+             AND t.status NOT IN (${OPEN_TRIP_EXCLUDED_SQL})
+           ORDER BY t.created_at DESC
+           LIMIT 1`,
+        )
+        .get(String(rfidTag).trim(), ...OPEN_TRIP_EXCLUDED_STATUSES),
+    );
+  },
+
+  findOpenTripForVehicle(truckNumber, rfidTag) {
+    return (
+      this.findOpenTripByTruck(truckNumber) ||
+      (rfidTag ? this.findOpenTripByRFID(rfidTag) : null)
+    );
+  },
+
+  getVehicleWeighmentInfo(truckNumber, rfidTag) {
+    const openTrip = this.findOpenTripForVehicle(truckNumber, rfidTag);
+    const normalized = truckNumber
+      ? String(truckNumber).trim().toUpperCase()
+      : null;
+
+    let lastTripSlip = null;
+    if (normalized) {
+      const lastCompleted = getDb()
+        .prepare(
+          `SELECT slip_number FROM transactions
+           WHERE truck_number = ?
+             AND gross_weight IS NOT NULL
+             AND tare_weight IS NOT NULL
+           ORDER BY COALESCE(timestamp_out, updated_at) DESC
+           LIMIT 1`,
+        )
+        .get(normalized);
+      lastTripSlip = lastCompleted?.slip_number || null;
+    }
+
+    const ticketStatus =
+      openTrip && openTrip.tare_weight != null ? 'open' : 'closed';
+
+    return {
+      ticketStatus,
+      openSlip: openTrip?.slip_number || null,
+      openTransactionId: openTrip?.id || null,
+      lastTripSlip,
+      trip:
+        ticketStatus === 'open'
+          ? openTrip?.slip_number || null
+          : lastTripSlip,
+    };
   },
 
   create(data) {
@@ -112,7 +225,7 @@ const TransactionService = {
       throw new Error('truck_number is required');
     }
 
-    const existing = this.findOpenByTruck(truckNumber);
+    const existing = this.findOpenTripByTruck(truckNumber);
     if (existing) {
       return {
         isDuplicate: true,
@@ -190,6 +303,7 @@ const TransactionService = {
       'tare_weight',
       'image_path',
       'tare_image_path',
+      'camera_snapshots',
       'timestamp_out',
       'status',
       'sync_status',

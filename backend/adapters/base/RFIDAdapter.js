@@ -39,7 +39,16 @@ class RFIDAdapter {
       connected: this.connected,
       config: this.config,
       mode: this.constructor.name,
+      scanning: false,
     };
+  }
+
+  async startScanning() {
+    /* no-op — override in subclass */
+  }
+
+  async stopScanning() {
+    /* no-op — override in subclass */
   }
 }
 

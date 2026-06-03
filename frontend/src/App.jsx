@@ -55,6 +55,25 @@ export default function App() {
       })
       .catch(() => {});
 
+    deviceAPI
+      .getRfidDisplayState()
+      .then((state) => {
+        if (!state?.tag) return;
+        if (!state.locked && !state.scanning) return;
+        const dev = useDeviceStore.getState();
+        dev.setRfidScanning(!!state.scanning);
+        dev.setLastRfidScan({
+          tag: state.tag,
+          tid: state.tid ?? null,
+          rssi: state.rssi ?? null,
+          antenna: state.antenna ?? null,
+          readerName: state.readerName ?? null,
+          timestamp: state.timestamp ?? new Date().toISOString(),
+          locked: !!state.locked,
+        });
+      })
+      .catch(() => {});
+
     return () => unsubs.forEach((u) => u());
   }, []);
 

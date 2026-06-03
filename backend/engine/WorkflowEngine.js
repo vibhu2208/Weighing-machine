@@ -8,6 +8,7 @@ const TransactionService = require('../services/TransactionService');
 const PrintService = require('../services/PrintService');
 const DeviceMonitorService = require('../services/DeviceMonitorService');
 const SyncQueue = require('./SyncQueue');
+const RfidTagSelector = require('../services/RfidTagSelector');
 
 const STATES = Object.freeze({
   IDLE: 'IDLE',
@@ -75,15 +76,19 @@ function clearTimers() {
   }
 }
 
-function resetToIdle() {
+function resetToIdle(options = {}) {
+  const { releaseSelectorLock = false, clearRfid = false } = options;
   clearTimers();
   engine.context = {};
   engine.weightLocked = false;
   engine.isProcessingWeight = false;
   engine.awaitingWeightSince = null;
   engine.printRetried = false;
+  if (releaseSelectorLock) {
+    RfidTagSelector.unlock();
+  }
   transition(STATES.IDLE);
-  emit('workflow:reset', {});
+  emit('workflow:reset', { clearRfid });
 }
 
 function goError(error, extra = {}) {
@@ -160,8 +165,16 @@ async function startTarePass(truckNumber, rfidTag, vehicle) {
   });
 
   if (result.isDuplicate) {
+    const existing = result.transaction || TransactionService.getById(result.existingId);
+    if (existing) {
+      if (existing.tare_weight == null) {
+        return resumeTarePass(existing, vehicle);
+      }
+      if (existing.tare_weight != null && existing.gross_weight == null) {
+        return startGrossPass(existing, vehicle);
+      }
+    }
     emit('workflow:duplicateTransaction', { existingId: result.existingId });
-    resetToIdle();
     return;
   }
 
@@ -215,7 +228,6 @@ async function proceedFromVehicle(truckNumber, rfidTag, vehicle) {
       existingId: open.id,
       message: 'Open ticket already exists for this vehicle',
     });
-    resetToIdle();
     return;
   }
 
@@ -275,18 +287,32 @@ async function handleStableWeight(payload) {
 }
 
 async function captureImage(txnId, pass) {
-  const { camera } = DeviceMonitorService.getAdapters();
+  const { resolveTripCaptures, mergeCameraSnapshots } = require('../services/TripCaptureService');
 
-  const finishCapture = async (imagePath) => {
+  const finishCapture = async (captureResult) => {
     if (engine.imageCaptureTimeout) {
       clearTimeout(engine.imageCaptureTimeout);
       engine.imageCaptureTimeout = null;
     }
 
+    const imagePath = captureResult?.primaryPath || null;
+    const snapshots = captureResult?.snapshots || [];
+    const passKey = pass === 'TARE' ? 'tare' : 'gross';
+    const existing = TransactionService.getById(txnId);
+
     const imageFields =
       pass === 'TARE'
         ? { tare_image_path: imagePath, image_path: imagePath }
         : { image_path: imagePath };
+
+    if (snapshots.length) {
+      imageFields.camera_snapshots = mergeCameraSnapshots(
+        existing?.camera_snapshots,
+        passKey,
+        snapshots,
+      );
+    }
+
     TransactionService.updateFields(txnId, imageFields);
     engine.context.transaction = TransactionService.getById(txnId);
 
@@ -309,13 +335,8 @@ async function captureImage(txnId, pass) {
   }, IMAGE_CAPTURE_TIMEOUT_MS);
 
   try {
-    if (!camera || !camera.isConnected()) {
-      if (camera && typeof camera.connect === 'function') {
-        await camera.connect();
-      }
-    }
-    const imagePath = await camera.captureImage(txnId);
-    await finishCapture(imagePath);
+    const captureResult = await resolveTripCaptures({ transactionId: txnId });
+    await finishCapture(captureResult);
   } catch (err) {
     logger.warn('Camera capture failed — continuing', { message: err.message });
     await finishCapture(null);
@@ -338,7 +359,8 @@ async function completeTarePass(txnId) {
   });
 
   engine.isProcessingWeight = false;
-  resetToIdle();
+  RfidTagSelector.unlock();
+  resetToIdle({ releaseSelectorLock: false });
 }
 
 async function completeTransaction() {
@@ -383,7 +405,8 @@ async function runPrint(txnId, isRetry = false) {
   emit('workflow:complete', { transaction: finalTxn });
 
   engine.isProcessingWeight = false;
-  resetToIdle();
+  RfidTagSelector.unlock();
+  resetToIdle({ clearRfid: true });
 }
 
 const WorkflowEngine = {
@@ -454,6 +477,27 @@ const WorkflowEngine = {
       return;
     }
 
+    if (
+      RfidTagSelector.isLocked() &&
+      tag !== RfidTagSelector.getLockedTag()
+    ) {
+      logger.debug('RFID ignored — different tag while locked', {
+        tag,
+        lockedTag: RfidTagSelector.getLockedTag(),
+      });
+      return;
+    }
+
+    if (
+      engine.state === STATES.RFID_DETECTED &&
+      engine.context.rfidTag === tag
+    ) {
+      return;
+    }
+
+    if (!RfidTagSelector.isLocked()) {
+      RfidTagSelector.lock(tag, payload);
+    }
     transition(STATES.RFID_DETECTED);
     engine.context.rfidTag = tag;
 
@@ -491,7 +535,12 @@ const WorkflowEngine = {
   },
 
   manualRfid(tag) {
+    RfidTagSelector.unlock();
     WorkflowEngine.handleRfidTag({ tag });
+  },
+
+  unlockRfid() {
+    RfidTagSelector.unlock();
   },
 
   abort() {
@@ -503,7 +552,16 @@ const WorkflowEngine = {
         notes: 'Aborted by operator',
       });
     }
-    resetToIdle();
+    RfidTagSelector.unlock();
+    try {
+      const DeviceMonitorService = require('../services/DeviceMonitorService');
+      if (typeof DeviceMonitorService.stopRfidScan === 'function') {
+        DeviceMonitorService.stopRfidScan();
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+    resetToIdle({ clearRfid: true });
   },
 
   async retryPrint(transactionId) {

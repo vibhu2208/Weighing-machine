@@ -25,6 +25,11 @@ module.exports = {
   extraResources: [
     { from: 'database', to: 'database', filter: ['**/*'] },
     { from: 'uploads', to: 'uploads', filter: ['**/*'] },
+    {
+      from: 'rfid-bridge/bin',
+      to: 'rfid-bridge',
+      filter: ['rfid-bridge.exe', 'ReaderAPI.dll'],
+    },
   ],
 
   asarUnpack: ['**/better-sqlite3/**/*'],

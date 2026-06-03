@@ -32,8 +32,40 @@ export function dispatchIpcEvent(channel, payload) {
       dev.updateDeviceStatus(payload);
       break;
 
+    case 'device:rfidScanState':
+      dev.setRfidScanning(!!payload?.scanning);
+      break;
+
     case 'device:rfidTag':
-      if (payload?.tag) dev.setLastRfidTag(payload.tag);
+      if (payload?.tag) {
+        dev.setLastRfidScan({
+          tag: payload.tag,
+          tid: payload.tid ?? null,
+          rssi: payload.rssi ?? null,
+          antenna: payload.antenna ?? null,
+          readerName: payload.readerName ?? null,
+          timestamp: payload.timestamp ?? new Date().toISOString(),
+          locked: true,
+        });
+      }
+      break;
+
+    case 'device:rfidLive':
+      if (!dev.rfid.scanning) break;
+      if (
+        payload?.tag &&
+        (!dev.rfid.locked || payload.tag === dev.rfid.lockedTag)
+      ) {
+        dev.setLastRfidScan({
+          tag: payload.tag,
+          tid: payload.tid ?? null,
+          rssi: payload.rssi ?? null,
+          antenna: payload.antenna ?? null,
+          readerName: payload.readerName ?? null,
+          timestamp: payload.timestamp ?? new Date().toISOString(),
+          locked: dev.rfid.locked && payload.tag === dev.rfid.lockedTag,
+        });
+      }
       break;
 
     case 'device:weightUpdate':
@@ -79,6 +111,7 @@ export function dispatchIpcEvent(channel, payload) {
       break;
 
     case 'workflow:tareComplete':
+      dev.unlockRfid();
       if (payload?.transaction) {
         tx.updateTransaction(payload.transaction);
         tx.setActiveTransaction(payload.transaction);
@@ -123,6 +156,7 @@ export function dispatchIpcEvent(channel, payload) {
       break;
 
     case 'workflow:complete':
+      dev.clearRfidScan();
       if (payload?.transaction) {
         tx.setActiveTransaction(payload.transaction);
         tx.updateTransaction(payload.transaction);
@@ -137,17 +171,25 @@ export function dispatchIpcEvent(channel, payload) {
       break;
 
     case 'workflow:reset':
+      if (payload?.clearRfid) {
+        dev.clearRfidScan();
+      }
       tx.resetActive();
       break;
 
     case 'workflow:unknownRFID':
+      if (payload?.tag) {
+        dev.lockRfid(payload.tag, {
+          tag: payload.tag,
+          timestamp: new Date().toISOString(),
+        });
+      }
       tx.setWorkflowState('RFID_DETECTED');
       tx.setLastEvent(payload);
       break;
 
     case 'workflow:duplicateTransaction':
       tx.setLastEvent(payload);
-      tx.resetActive();
       break;
 
     case 'workflow:error':
@@ -197,9 +239,12 @@ export const WORKFLOW_CHANNELS = [
 
 export const DEVICE_CHANNELS = [
   'device:statusUpdate',
+  'device:rfidScanState',
   'device:rfidTag',
+  'device:rfidLive',
   'device:weightUpdate',
   'device:stableWeight',
   'device:weightZero',
   'device:cameraCapture',
+  'device:cameraFrame',
 ];

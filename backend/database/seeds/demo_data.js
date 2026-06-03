@@ -45,6 +45,14 @@ const DEMO_VEHICLES = [
     vehicle_type: 'tanker',
     max_capacity: 10000,
   },
+  {
+    vehicle_number: 'HR38AH6118',
+    rfid_tag: 'E200470678E064222F03010C',
+    owner_name: 'Krishna Transport Co.',
+    transporter: 'Haryana Freight Lines',
+    vehicle_type: 'truck',
+    max_capacity: 28000,
+  },
 ];
 
 const SETTINGS_KEYS = [
@@ -148,6 +156,8 @@ function seed(db) {
       { truck: 'RJ14EF9012', rfid: 'E280117000000208AABBCC03', daysAgo: 1, gross: 29000, tare: 10500, sync: SYNC_STATUS.FAILED, status: TRANSACTION_STATUS.PRINTED, slip: 'WB-1008' },
       { truck: 'UP32GH3456', rfid: 'E280117000000208AABBCC04', daysAgo: 1, gross: 19800, tare: 8800, sync: SYNC_STATUS.PENDING, status: TRANSACTION_STATUS.PRINTED, slip: 'WB-1009' },
       { truck: 'DL01IJ7890', rfid: 'E280117000000208AABBCC05', daysAgo: 0, gross: 16500, tare: 8200, sync: SYNC_STATUS.SYNCED, status: TRANSACTION_STATUS.SYNCED, slip: 'WB-1010' },
+      { truck: 'HR38AH6118', rfid: 'E200470678E064222F03010C', daysAgo: 2, gross: 26500, tare: 9200, sync: SYNC_STATUS.SYNCED, status: TRANSACTION_STATUS.SYNCED, slip: 'WB-1011' },
+      { truck: 'HR38AH6118', rfid: 'E200470678E064222F03010C', daysAgo: 0, gross: 24800, tare: 9100, sync: SYNC_STATUS.PENDING, status: TRANSACTION_STATUS.PRINTED, slip: 'WB-1012' },
     ];
 
     const insertTxn = db.prepare(
@@ -196,7 +206,7 @@ function seed(db) {
 
     // Advance slip counter past demo slips
     db.prepare(
-      `UPDATE slip_counter SET current_value = 1010, updated_at = ? WHERE current_value < 1010`,
+      `UPDATE slip_counter SET current_value = 1012, updated_at = ? WHERE current_value < 1012`,
     ).run(now);
   });
 

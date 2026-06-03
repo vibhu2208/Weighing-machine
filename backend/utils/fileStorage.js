@@ -47,6 +47,26 @@ function getImagePath(transactionId, date) {
   return normalizePath(path.join(dir, `${transactionId}.jpg`));
 }
 
+/** Per-camera snapshot: uploads/YYYY/MM/DD/{transactionId}_{cameraId}.jpg */
+function getCameraImagePath(transactionId, cameraId, date) {
+  if (!transactionId) {
+    throw new Error('getCameraImagePath: transactionId is required');
+  }
+  const safeId = String(cameraId || 'cam').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const { year, month, day } = ts.parts(date);
+  const dir = ensureDir(path.join(PATHS.UPLOADS, year, month, day));
+  return normalizePath(path.join(dir, `${transactionId}_${safeId}.jpg`));
+}
+
+function saveCameraImage(sourceBuffer, transactionId, cameraId, date) {
+  if (!Buffer.isBuffer(sourceBuffer)) {
+    throw new Error('saveCameraImage: sourceBuffer must be a Buffer');
+  }
+  const dest = getCameraImagePath(transactionId, cameraId, date);
+  fs.writeFileSync(dest, sourceBuffer);
+  return dest;
+}
+
 function saveImage(sourceBuffer, transactionId, date) {
   if (!Buffer.isBuffer(sourceBuffer)) {
     throw new Error('saveImage: sourceBuffer must be a Buffer');
@@ -189,6 +209,8 @@ module.exports = {
   normalizePath,
   ensureDir,
   getImagePath,
+  getCameraImagePath,
+  saveCameraImage,
   saveImage,
   getImage,
   deleteImage,

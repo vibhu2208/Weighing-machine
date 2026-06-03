@@ -8,6 +8,7 @@ import {
   syncAPI,
   transactionAPI,
 } from '../api/ipc.js';
+import RfidPowerControl from '../components/settings/RfidPowerControl.jsx';
 
 const IPV4 =
   /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?!$)|$)){4}$/;
@@ -35,10 +36,37 @@ const FIELDS = {
       key: 'WEIGHBRIDGE_BAUD_RATE',
       label: 'Baud rate',
       type: 'select',
-      options: ['9600', '19200', '38400'],
+      options: ['2400', '4800', '9600', '19200', '38400'],
       test: 'weighbridge',
     },
-    { key: 'CAMERA_RTSP_URL', label: 'Camera RTSP URL', type: 'text', test: 'camera' },
+    {
+      key: 'WEIGHBRIDGE_DATA_BITS',
+      label: 'Data bits',
+      type: 'select',
+      options: ['7', '8'],
+      test: 'weighbridge',
+    },
+    {
+      key: 'WEIGHBRIDGE_PARITY',
+      label: 'Parity',
+      type: 'select',
+      options: ['none', 'even', 'odd'],
+      test: 'weighbridge',
+    },
+    {
+      key: 'WEIGHBRIDGE_STOP_BITS',
+      label: 'Stop bits',
+      type: 'select',
+      options: ['1', '2'],
+      test: 'weighbridge',
+    },
+    {
+      key: 'CAMERA_RTSP_URLS',
+      label: 'Camera IPs (comma-separated)',
+      type: 'text',
+      test: 'camera',
+    },
+    { key: 'CAMERA_RTSP_URL', label: 'Primary camera RTSP URL', type: 'text', test: 'camera' },
   ],
   cloud: [
     { key: 'CLOUD_SYNC_URL', label: 'Cloud API URL', type: 'text' },
@@ -180,16 +208,33 @@ export default function Settings() {
 
       <Card title="Hardware configuration">
         {FIELDS.hardware.map((f) => (
-          <SettingRow
-            key={f.key}
-            field={f}
-            value={values[f.key] ?? ''}
-            error={errors[f.key]}
-            onChange={(v) => update(f.key, v)}
-            testState={tests[f.test]}
-            onTest={() => testDevice(f.test)}
-            showTest={f.key === 'RFID_IP' || f.key === 'WEIGHBRIDGE_COM_PORT' || f.key === 'CAMERA_RTSP_URL'}
-          />
+          <React.Fragment key={f.key}>
+            <SettingRow
+              field={f}
+              value={values[f.key] ?? ''}
+              error={errors[f.key]}
+              onChange={(v) => update(f.key, v)}
+              testState={tests[f.test]}
+              onTest={() => testDevice(f.test)}
+              showTest={
+                f.key === 'RFID_IP' ||
+                f.key === 'WEIGHBRIDGE_COM_PORT' ||
+                f.key === 'CAMERA_RTSP_URL' ||
+                f.key === 'CAMERA_RTSP_URLS'
+              }
+            />
+            {f.key === 'RFID_PORT' && (
+              <RfidPowerControl
+                mockMode={values.USE_MOCK_HARDWARE === 'true' || values.USE_MOCK_HARDWARE === true}
+                savedPower={values.RFID_ANTENNA_POWER}
+                onSaved={(v) => {
+                  setValues((prev) => ({ ...prev, RFID_ANTENNA_POWER: v }));
+                  setSaved(true);
+                  setTimeout(() => setSaved(false), 2000);
+                }}
+              />
+            )}
+          </React.Fragment>
         ))}
       </Card>
 

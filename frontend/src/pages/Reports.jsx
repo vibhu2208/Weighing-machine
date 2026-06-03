@@ -138,12 +138,14 @@ export default function Reports() {
                     <th className="px-4 py-3">Out</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Sync</th>
-                    <th className="px-4 py-3">Img</th>
+                    <th className="px-4 py-3">Cams</th>
                     <th className="px-4 py-3" />
                   </tr>
                 </thead>
                 <tbody>
-                  {pageRows.map((t) => (
+                  {pageRows.map((t) => {
+                    const cameraImages = listTripCameraImages(t);
+                    return (
                     <React.Fragment key={t.id}>
                       <tr
                         className="border-b border-slate-800/60 hover:bg-slate-800/30 cursor-pointer"
@@ -163,7 +165,7 @@ export default function Reports() {
                         <td className="px-4 py-2">
                           <Badge label={t.sync_status} variant={syncVariant(t.sync_status)} />
                         </td>
-                        <td className="px-4 py-2">{t.image_path ? '🖼' : '—'}</td>
+                        <td className="px-4 py-2">{cameraImages.length || '—'}</td>
                         <td className="px-4 py-2 space-x-1" onClick={(e) => e.stopPropagation()}>
                           <button type="button" className="text-xs text-brand-300" onClick={() => reportAPI.printSlip(t.id)}>
                             Reprint
@@ -188,19 +190,30 @@ export default function Reports() {
                                 <p><span className="text-slate-500">Owner:</span> {t.owner_name || '—'}</p>
                                 <p><span className="text-slate-500">Transporter:</span> {t.transporter || '—'}</p>
                               </div>
-                              {t.image_path && (
-                                <img
-                                  src={toMediaUrl(t.image_path)}
-                                  alt="Slip"
-                                  className="h-24 rounded border border-slate-700"
-                                />
+                              {cameraImages.length > 0 && (
+                                <div className="flex flex-wrap gap-3">
+                                  {cameraImages.map((cam) => (
+                                    <figure key={`${cam.path}-${cam.id || cam.label}`} className="text-center">
+                                      <img
+                                        src={toMediaUrl(cam.path)}
+                                        alt={cam.label || cam.pass}
+                                        className="h-24 rounded border border-slate-700 object-cover"
+                                      />
+                                      <figcaption className="mt-1 text-xs text-slate-500">
+                                        {cam.label || cam.pass}
+                                        {cam.pass ? ` (${cam.pass})` : ''}
+                                      </figcaption>
+                                    </figure>
+                                  ))}
+                                </div>
                               )}
                             </div>
                           </td>
                         </tr>
                       )}
                     </React.Fragment>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -245,4 +258,26 @@ function fmt(iso) {
   } catch {
     return iso;
   }
+}
+
+function listTripCameraImages(t) {
+  const seen = new Set();
+  const out = [];
+  const add = (item) => {
+    if (!item?.path || seen.has(item.path)) return;
+    seen.add(item.path);
+    out.push(item);
+  };
+
+  const snaps = t.camera_snapshots;
+  if (snaps && typeof snaps === 'object') {
+    for (const pass of ['tare', 'gross']) {
+      for (const s of snaps[pass] || []) {
+        add({ ...s, pass });
+      }
+    }
+  }
+  if (t.tare_image_path) add({ label: 'Tare', path: t.tare_image_path, pass: 'tare' });
+  if (t.image_path) add({ label: 'Gross', path: t.image_path, pass: 'gross' });
+  return out;
 }

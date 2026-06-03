@@ -13,6 +13,7 @@ const logger = require('../utils/logger');
 const { PATHS, ensureDir } = require('../utils/fileStorage');
 const migration001 = require('./migrations/001_initial');
 const migration002 = require('./migrations/002_tare_image');
+const migration003 = require('./migrations/003_camera_snapshots');
 
 let db = null;
 
@@ -33,7 +34,7 @@ function runMigrations(handle = db) {
     throw new Error('runMigrations: database is not initialised');
   }
 
-  const migrations = [migration001, migration002];
+  const migrations = [migration001, migration002, migration003];
 
   const apply = handle.transaction(() => {
     for (const migration of migrations) {
@@ -81,6 +82,14 @@ function initDatabase() {
     logger.info('SQLite connected', { path: dbPath, mode: 'WAL' });
 
     runMigrations(db);
+
+    try {
+      const TransactionService = require('../services/TransactionService');
+      TransactionService.ensureSlipCounter();
+    } catch (err) {
+      logger.warn('slip_counter bootstrap skipped', { message: err.message });
+    }
+
     return db;
   } catch (err) {
     logger.error('SQLite connection failed', {

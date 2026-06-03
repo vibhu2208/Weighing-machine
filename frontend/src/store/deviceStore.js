@@ -1,7 +1,17 @@
 import { create } from 'zustand';
 
 const defaultDevices = () => ({
-  rfid: { connected: false, lastTag: null, lastSeen: null },
+  rfid: {
+    connected: false,
+    scanning: false,
+    lastTag: null,
+    lastScan: null,
+    lastSeen: null,
+    locked: false,
+    lockedTag: null,
+    lastError: null,
+    reconnecting: false,
+  },
   weighbridge: { connected: false, currentWeight: 0, isStable: false, lastSeen: null },
   camera: { connected: false, lastSeen: null },
   cloud: { connected: false, pendingCount: 0, lastSync: null },
@@ -17,7 +27,10 @@ const useDeviceStore = create((set) => ({
       rfid: {
         ...s.rfid,
         connected: !!status?.rfid?.connected,
+        scanning: !!status?.rfid?.scanning,
         lastSeen: status?.rfid?.lastSeen || s.rfid.lastSeen,
+        lastError: status?.rfid?.lastError ?? s.rfid.lastError ?? null,
+        reconnecting: !!status?.rfid?.reconnecting,
       },
       weighbridge: {
         ...s.weighbridge,
@@ -41,7 +54,75 @@ const useDeviceStore = create((set) => ({
 
   setLastRfidTag: (tag) =>
     set((s) => ({
-      rfid: { ...s.rfid, lastTag: tag, lastSeen: new Date().toISOString() },
+      rfid: {
+        ...s.rfid,
+        lastTag: tag,
+        lastSeen: new Date().toISOString(),
+      },
+    })),
+
+  setLastRfidScan: (scan) =>
+    set((s) => {
+      if (
+        s.rfid.locked &&
+        scan?.locked !== true &&
+        scan?.tag &&
+        scan.tag !== s.rfid.lockedTag
+      ) {
+        return s;
+      }
+      const shouldLock = scan?.locked === true;
+      return {
+        rfid: {
+          ...s.rfid,
+          lastTag: scan?.tag ?? s.rfid.lastTag,
+          lastScan: scan,
+          lastSeen: scan?.timestamp || new Date().toISOString(),
+          locked: shouldLock ? true : s.rfid.locked,
+          lockedTag: shouldLock ? scan?.tag ?? s.rfid.lockedTag : s.rfid.lockedTag,
+        },
+      };
+    }),
+
+  lockRfid: (tag, scan = null) =>
+    set((s) => ({
+      rfid: {
+        ...s.rfid,
+        lastTag: tag,
+        lastScan: scan || { tag, ...(s.rfid.lastScan?.tag === tag ? s.rfid.lastScan : {}) },
+        lastSeen: new Date().toISOString(),
+        locked: true,
+        lockedTag: tag,
+      },
+    })),
+
+  unlockRfid: () =>
+    set((s) => ({
+      rfid: {
+        ...s.rfid,
+        locked: false,
+        lockedTag: null,
+      },
+    })),
+
+  setRfidScanning: (scanning) =>
+    set((s) => ({
+      rfid: {
+        ...s.rfid,
+        scanning: !!scanning,
+      },
+    })),
+
+  clearRfidScan: () =>
+    set((s) => ({
+      rfid: {
+        ...s.rfid,
+        lastTag: null,
+        lastScan: null,
+        locked: false,
+        lockedTag: null,
+        scanning: false,
+      },
     })),
 
   updateWeight: (weight, isStable) =>

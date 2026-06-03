@@ -3,10 +3,30 @@
 const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('../database/db');
 const ts = require('../utils/timestamp');
+const TransactionService = require('./TransactionService');
 
 function rowToVehicle(row) {
   if (!row) return null;
   return { ...row };
+}
+
+function attachWeighmentInfo(vehicle) {
+  if (!vehicle) return vehicle;
+  const info = TransactionService.getVehicleWeighmentInfo(
+    vehicle.vehicle_number,
+    vehicle.rfid_tag,
+  );
+  return {
+    ...vehicle,
+    ticket_status: info.ticketStatus,
+    open_slip: info.openSlip,
+    trip: info.trip,
+    last_trip_slip: info.lastTripSlip,
+  };
+}
+
+function mapVehicles(rows) {
+  return rows.map((row) => attachWeighmentInfo(rowToVehicle(row)));
 }
 
 function normalizeVehicleNumber(number) {
@@ -48,38 +68,46 @@ const VehicleService = {
     const sql = includeInactive
       ? `SELECT * FROM vehicles ORDER BY vehicle_number ASC`
       : `SELECT * FROM vehicles WHERE status != 'inactive' ORDER BY vehicle_number ASC`;
-    return getDb().prepare(sql).all().map(rowToVehicle);
+    return mapVehicles(getDb().prepare(sql).all());
   },
 
   getById(id) {
-    return rowToVehicle(
-      getDb().prepare('SELECT * FROM vehicles WHERE id = ?').get(id),
+    return attachWeighmentInfo(
+      rowToVehicle(getDb().prepare('SELECT * FROM vehicles WHERE id = ?').get(id)),
     );
   },
 
   findByRFID(rfidTag) {
     if (!rfidTag) return null;
-    return rowToVehicle(
-      getDb()
-        .prepare(
-          `SELECT * FROM vehicles
+    return attachWeighmentInfo(
+      rowToVehicle(
+        getDb()
+          .prepare(
+            `SELECT * FROM vehicles
            WHERE rfid_tag = ? AND status != 'inactive'`,
-        )
-        .get(rfidTag),
+          )
+          .get(rfidTag),
+      ),
     );
   },
 
   findByNumber(number) {
     if (!number) return null;
     const normalized = normalizeVehicleNumber(number);
-    return rowToVehicle(
-      getDb()
-        .prepare(
-          `SELECT * FROM vehicles
+    return attachWeighmentInfo(
+      rowToVehicle(
+        getDb()
+          .prepare(
+            `SELECT * FROM vehicles
            WHERE vehicle_number = ? AND status != 'inactive'`,
-        )
-        .get(normalized),
+          )
+          .get(normalized),
+      ),
     );
+  },
+
+  getWeighmentInfo(truckNumber, rfidTag) {
+    return TransactionService.getVehicleWeighmentInfo(truckNumber, rfidTag);
   },
 
   create(data) {
@@ -201,15 +229,16 @@ const VehicleService = {
       return this.getAll();
     }
     const q = `%${String(query).trim().toUpperCase()}%`;
-    return getDb()
-      .prepare(
-        `SELECT * FROM vehicles
+    return mapVehicles(
+      getDb()
+        .prepare(
+          `SELECT * FROM vehicles
          WHERE status != 'inactive'
            AND (UPPER(vehicle_number) LIKE ? OR UPPER(owner_name) LIKE ?)
          ORDER BY vehicle_number ASC`,
-      )
-      .all(q, q)
-      .map(rowToVehicle);
+        )
+        .all(q, q),
+    );
   },
 };
 

@@ -32,6 +32,10 @@ function register(ipcMain) {
   ipcMain.handle(`${NAMESPACE}:findByRFID`, async (_e, rfidTag) =>
     VehicleService.findByRFID(rfidTag),
   );
+
+  ipcMain.handle(`${NAMESPACE}:getWeighmentInfo`, async (_e, truckNumber, rfidTag) =>
+    VehicleService.getWeighmentInfo(truckNumber, rfidTag),
+  );
 }
 
 module.exports = { register, NAMESPACE };

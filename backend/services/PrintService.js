@@ -3,7 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
-const { BrowserWindow } = require('electron');
+
+let BrowserWindow = null;
+try {
+  BrowserWindow = require('electron').BrowserWindow;
+} catch (_e) {
+  /* server mode — slip PDF generation unavailable without Electron */
+}
 const logger = require('../utils/logger');
 const ts = require('../utils/timestamp');
 const SettingsService = require('./SettingsService');
@@ -132,6 +138,13 @@ function buildThermalText(slip) {
 async function renderPDF(slip, transaction) {
   const paths = slipPaths(transaction.id, transaction.timestamp_in);
   const html = buildSlipHtml(slip);
+
+  if (!BrowserWindow) {
+    const err = new Error('PDF slip generation requires the desktop app (Electron)');
+    err.code = 'PDF_UNAVAILABLE';
+    throw err;
+  }
+
   const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 
   const win = new BrowserWindow({

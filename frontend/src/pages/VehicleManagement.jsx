@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { vehicleAPI } from '../api/ipc.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { deviceAPI, subscribe, vehicleAPI } from '../api/ipc.js';
 import Badge from '../components/shared/Badge.jsx';
 import { useToast } from '../components/shared/Toast.jsx';
+import useDeviceStore from '../store/deviceStore.js';
 
 const TYPES = ['truck', 'tanker', 'container'];
 const EMPTY = {
@@ -23,6 +24,18 @@ export default function VehicleManagement() {
   const [form, setForm] = useState(EMPTY);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [scanningRfid, setScanningRfid] = useState(false);
+  const rfidConnected = useDeviceStore((s) => s.rfid.connected);
+  const scanAppliedRef = useRef(false);
+
+  const applyScannedTag = useCallback((tag) => {
+    const normalized = String(tag || '').trim().toUpperCase();
+    if (!normalized || scanAppliedRef.current) return;
+    scanAppliedRef.current = true;
+    setForm((f) => ({ ...f, rfid_tag: normalized }));
+    setScanningRfid(false);
+    deviceAPI.stopRfidScan().catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     const rows = showInactive
@@ -38,10 +51,18 @@ export default function VehicleManagement() {
     return () => clearTimeout(t);
   }, [load]);
 
+  function closeDrawer() {
+    setScanningRfid(false);
+    scanAppliedRef.current = false;
+    deviceAPI.stopRfidScan().catch(() => {});
+    setDrawerOpen(false);
+  }
+
   function openAdd() {
     setEditing(null);
     setForm(EMPTY);
     setErrors({});
+    scanAppliedRef.current = false;
     setDrawerOpen(true);
   }
 
@@ -56,7 +77,44 @@ export default function VehicleManagement() {
       max_capacity: v.max_capacity ?? '',
     });
     setErrors({});
+    scanAppliedRef.current = false;
     setDrawerOpen(true);
+  }
+
+  useEffect(() => {
+    if (!scanningRfid || !drawerOpen) return undefined;
+
+    const onTag = (payload) => {
+      if (payload?.tag) applyScannedTag(payload.tag);
+    };
+
+    const unsubs = [
+      subscribe('device:rfidLive', onTag),
+      subscribe('device:rfidTag', onTag),
+    ];
+
+    return () => unsubs.forEach((u) => u());
+  }, [scanningRfid, drawerOpen, applyScannedTag]);
+
+  async function handleScanRfid() {
+    if (scanningRfid) {
+      setScanningRfid(false);
+      scanAppliedRef.current = false;
+      await deviceAPI.stopRfidScan().catch(() => {});
+      return;
+    }
+    if (!rfidConnected) {
+      toast.show('RFID reader is not connected');
+      return;
+    }
+    scanAppliedRef.current = false;
+    try {
+      useDeviceStore.getState().clearRfidScan();
+      await deviceAPI.startRfidScan();
+      setScanningRfid(true);
+    } catch (err) {
+      toast.show(err.message || 'Failed to start RFID scan');
+    }
   }
 
   function validate() {
@@ -89,7 +147,7 @@ export default function VehicleManagement() {
         await vehicleAPI.create(payload);
         toast.show('Vehicle added');
       }
-      setDrawerOpen(false);
+      closeDrawer();
       await load();
     } catch (err) {
       const msg = err.message || 'Save failed';
@@ -160,7 +218,9 @@ export default function VehicleManagement() {
                 <th className="px-5 py-3">Transporter</th>
                 <th className="px-5 py-3">Type</th>
                 <th className="px-5 py-3">Capacity</th>
-                <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Ticket Status</th>
+                <th className="px-5 py-3">Trip</th>
+                <th className="px-5 py-3">Active</th>
                 <th className="px-5 py-3">Actions</th>
               </tr>
             </thead>
@@ -176,6 +236,15 @@ export default function VehicleManagement() {
                   <td className="px-5 py-3">{v.transporter || '—'}</td>
                   <td className="px-5 py-3 capitalize">{v.vehicle_type}</td>
                   <td className="px-5 py-3">{v.max_capacity ? `${v.max_capacity} kg` : '—'}</td>
+                  <td className="px-5 py-3">
+                    <Badge
+                      label={v.ticket_status === 'open' ? 'Open' : 'Closed'}
+                      variant={v.ticket_status === 'open' ? 'warning' : 'success'}
+                    />
+                  </td>
+                  <td className="px-5 py-3 font-mono text-xs text-slate-300">
+                    {v.trip || '—'}
+                  </td>
                   <td className="px-5 py-3">
                     <Badge
                       label={v.status}
@@ -197,11 +266,11 @@ export default function VehicleManagement() {
 
       {drawerOpen && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/50" onClick={() => !saving && setDrawerOpen(false)} />
+          <div className="fixed inset-0 z-40 bg-black/50" onClick={() => !saving && closeDrawer()} />
           <aside className="fixed right-0 top-0 z-50 h-full w-full max-w-md border-l border-slate-800 bg-slate-900 shadow-2xl flex flex-col">
             <div className="border-b border-slate-800 px-5 py-4 flex justify-between items-center">
               <h2 className="font-semibold text-white">{editing ? 'Edit vehicle' : 'Add vehicle'}</h2>
-              <button type="button" className="text-slate-400" disabled={saving} onClick={() => setDrawerOpen(false)}>✕</button>
+              <button type="button" className="text-slate-400" disabled={saving} onClick={closeDrawer}>✕</button>
             </div>
             <form onSubmit={handleSubmit} className="flex-1 overflow-auto p-5 space-y-4">
               {errors.form && <p className="text-sm text-red-300">{errors.form}</p>}
@@ -209,7 +278,28 @@ export default function VehicleManagement() {
                 <input className="field-input" disabled={saving} value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value.toUpperCase() })} />
               </Field>
               <Field label="RFID tag" error={errors.rfid_tag}>
-                <input className="field-input" disabled={saving} value={form.rfid_tag} onChange={(e) => setForm({ ...form, rfid_tag: e.target.value })} />
+                <input
+                  className="field-input font-mono text-sm"
+                  disabled={saving || scanningRfid}
+                  value={form.rfid_tag}
+                  onChange={(e) =>
+                    setForm({ ...form, rfid_tag: e.target.value.trim().toUpperCase() })
+                  }
+                  placeholder="Scan or enter EPC"
+                />
+                <button
+                  type="button"
+                  className={`mt-2 w-full ${scanningRfid ? 'btn-danger' : 'btn-primary'}`}
+                  disabled={saving || (!scanningRfid && !rfidConnected)}
+                  onClick={handleScanRfid}
+                >
+                  {scanningRfid ? 'Stop scanning' : 'Scan RFID'}
+                </button>
+                {scanningRfid && (
+                  <p className="mt-2 text-xs text-amber-300">
+                    Hold tag near reader — EPC will fill automatically
+                  </p>
+                )}
               </Field>
               <Field label="Owner name *" error={errors.owner_name}>
                 <input className="field-input" disabled={saving} value={form.owner_name} onChange={(e) => setForm({ ...form, owner_name: e.target.value })} />

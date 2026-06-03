@@ -14,13 +14,13 @@ export default function SimulatorPanel({ embedded = false }) {
     (async () => {
       try {
         const mock = await settingsAPI.get('USE_MOCK_HARDWARE');
-        const env = await settingsAPI.get('APP_ENV');
         if (alive) {
-          const isDev = (env || 'development').toLowerCase() === 'development';
-          setDevMode(mock === 'true' || mock === true || isDev);
+          const mockEnabled =
+            String(mock).toLowerCase() === 'true' || mock === true;
+          setDevMode(mockEnabled);
         }
       } catch {
-        if (alive) setDevMode(true);
+        if (alive) setDevMode(false);
       }
     })();
     return () => {
@@ -54,6 +54,13 @@ export default function SimulatorPanel({ embedded = false }) {
         {!collapsed && (
           <div className="p-3 flex flex-col gap-3 bg-slate-900/95">
             <RFIDSimButton />
+            <button
+              type="button"
+              className="btn-ghost w-full text-[10px]"
+              onClick={() => deviceAPI.simulateMultiRFID().catch(console.error)}
+            >
+              Simulate 3 tags (closest wins)
+            </button>
             <WeightSimSlider />
             <CameraSimButton />
 

@@ -2,7 +2,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { BrowserWindow } = require('electron');
+
+let BrowserWindow = null;
+try {
+  BrowserWindow = require('electron').BrowserWindow;
+} catch (_e) {
+  /* server mode — PDF export unavailable without Electron */
+}
 const { getDb } = require('../database/db');
 const ts = require('../utils/timestamp');
 const { PATHS, ensureDir } = require('../utils/fileStorage');
@@ -66,6 +72,21 @@ function summarise(rows) {
   };
 }
 
+function countCameraSnapshots(row) {
+  if (!row?.camera_snapshots) {
+    return row?.image_path || row?.tare_image_path ? 1 : 0;
+  }
+  let raw = row.camera_snapshots;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return row?.image_path || row?.tare_image_path ? 1 : 0;
+    }
+  }
+  return (raw.tare?.length || 0) + (raw.gross?.length || 0);
+}
+
 const CSV_HEADERS = [
   'Slip No',
   'Truck Number',
@@ -79,6 +100,7 @@ const CSV_HEADERS = [
   'Sync Status',
   'Operator',
   'Image Available',
+  'Camera Snapshots',
 ];
 
 const ReportService = {
@@ -146,6 +168,7 @@ const ReportService = {
           r.sync_status,
           r.operator_id || r.operator || '',
           r.image_path ? 'yes' : 'no',
+          countCameraSnapshots(r),
         ]
           .map(escapeCsv)
           .join(','),
@@ -191,6 +214,13 @@ const ReportService = {
         </tr></tfoot>
       </table>
     </body></html>`;
+
+    if (!BrowserWindow) {
+      return {
+        ok: false,
+        error: 'PDF export requires the desktop app (Electron). CSV export is available in server mode.',
+      };
+    }
 
     const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
     try {

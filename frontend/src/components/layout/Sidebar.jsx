@@ -19,8 +19,11 @@ const navClass = ({ isActive }) =>
       : 'text-slate-400 hover:bg-slate-800/80 hover:text-white border border-transparent',
   ].join(' ');
 
-function dotStatus(connected) {
-  return connected ? 'connected' : 'disconnected';
+function dotStatus(device) {
+  if (!device) return 'disconnected';
+  if (device.connected) return 'connected';
+  if (device.reconnecting) return 'waiting';
+  return 'disconnected';
 }
 
 export default function Sidebar() {
@@ -50,15 +53,15 @@ export default function Sidebar() {
         </div>
         <div className="flex items-center justify-between text-xs">
           <span>RFID</span>
-          <StatusDot status={dotStatus(rfid.connected)} showLabel={false} />
+          <StatusDot status={dotStatus(rfid)} showLabel={false} />
         </div>
         <div className="flex items-center justify-between text-xs">
           <span>Scale</span>
-          <StatusDot status={dotStatus(weighbridge.connected)} showLabel={false} />
+          <StatusDot status={dotStatus(weighbridge)} showLabel={false} />
         </div>
         <div className="flex items-center justify-between text-xs">
           <span>Camera</span>
-          <StatusDot status={dotStatus(camera.connected)} showLabel={false} />
+          <StatusDot status={dotStatus(camera)} showLabel={false} />
         </div>
       </div>
     </aside>

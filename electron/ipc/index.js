@@ -6,7 +6,12 @@
  * `not_implemented` payload but the channels exist so the renderer never
  * crashes when calling them.
  */
-const { ipcMain } = require('electron');
+let electronIpcMain = null;
+try {
+  electronIpcMain = require('electron').ipcMain;
+} catch (_e) {
+  /* server mode — no Electron */
+}
 
 const modules = [
   require('./transaction.ipc'),
@@ -20,12 +25,16 @@ const modules = [
   require('./storage.ipc'),
 ];
 
-function registerAll() {
+function registerAll(ipcMainInstance) {
+  const target = ipcMainInstance || electronIpcMain;
+  if (!target) {
+    throw new Error('ipcMain is not available (Electron not loaded)');
+  }
   for (const mod of modules) {
     if (mod && typeof mod.register === 'function') {
-      mod.register(ipcMain);
+      mod.register(target);
     }
   }
 }
 
-module.exports = { registerAll };
+module.exports = { registerAll, modules };

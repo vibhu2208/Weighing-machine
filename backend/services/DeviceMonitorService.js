@@ -9,6 +9,8 @@ const MockCameraAdapter = require('../adapters/mock/MockCameraAdapter');
 const RealRFIDAdapter = require('../adapters/real/RealRFIDAdapter');
 const RealWeighbridgeAdapter = require('../adapters/real/RealWeighbridgeAdapter');
 const RealCameraAdapter = require('../adapters/real/RealCameraAdapter');
+const WebcamCameraAdapter = require('../adapters/real/WebcamCameraAdapter');
+const RfidTagSelector = require('./RfidTagSelector');
 
 const HEALTH_INTERVAL_MS = 10000;
 const RETRY_DELAYS_MS = [5000, 10000, 20000, 40000, 80000];
@@ -18,11 +20,14 @@ let started = false;
 let getMainWindow = () => null;
 
 let rfidAdapter = null;
+let rfidAdapters = [];
 let weighbridgeAdapter = null;
 let cameraAdapter = null;
 
 let latestStatus = null;
 let healthTimer = null;
+let lastRfidSeen = null;
+let rfidScanning = false;
 const retryState = {
   rfid: { attempts: 0, timer: null },
   weighbridge: { attempts: 0, timer: null },
@@ -34,20 +39,86 @@ function useMockHardware() {
   return flag !== 'false' && flag !== '0';
 }
 
+function envFlagTrue(key) {
+  const flag = String(process.env[key] || '').toLowerCase();
+  return flag === 'true' || flag === '1';
+}
+
+function useMockWeighbridge() {
+  if (envFlagTrue('USE_MOCK_WEIGHBRIDGE')) return true;
+  if (process.env.USE_MOCK_WEIGHBRIDGE === 'false' || process.env.USE_MOCK_WEIGHBRIDGE === '0') {
+    return false;
+  }
+  if (useMockHardware()) return true;
+  const simulateKg = parseFloat(process.env.SIMULATE_WEIGHT_KG);
+  return Number.isFinite(simulateKg) && simulateKg > 0;
+}
+
+function useWebcamCamera() {
+  return envFlagTrue('USE_WEBCAM_CAMERA');
+}
+
+function getSimulateWeightKg() {
+  const n = parseFloat(process.env.SIMULATE_WEIGHT_KG);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function buildConfig() {
+  let settings = {};
+  try {
+    const SettingsService = require('./SettingsService');
+    settings = SettingsService.getAll();
+  } catch (_e) {
+    /* DB may not be ready during early init */
+  }
+
+  const pick = (key, envKey) =>
+    settings[key] || process.env[envKey || key] || undefined;
+  const pickPreferEnv = (key, envKey) =>
+    process.env[envKey || key] || settings[key] || undefined;
+
   return {
     rfid: {
-      ip: process.env.RFID_IP,
-      port: process.env.RFID_PORT,
+      ip: pick('RFID_IP'),
+      ips: pick('RFID_IPS'),
+      port: pick('RFID_PORT'),
+      antMask: Number(pick('RFID_ANT_MASK')) || 1,
+      debounceMs: Number(pick('RFID_DEBOUNCE_MS')) || 2500,
+      antennaPower: Number(pick('RFID_ANTENNA_POWER')) || 20,
     },
     weighbridge: {
-      comPort: process.env.WEIGHBRIDGE_COM_PORT,
-      baudRate: process.env.WEIGHBRIDGE_BAUD_RATE,
+      comPort: pickPreferEnv('WEIGHBRIDGE_COM_PORT'),
+      baudRate: pickPreferEnv('WEIGHBRIDGE_BAUD_RATE'),
+      dataBits: pickPreferEnv('WEIGHBRIDGE_DATA_BITS'),
+      parity: pickPreferEnv('WEIGHBRIDGE_PARITY'),
+      stopBits: pickPreferEnv('WEIGHBRIDGE_STOP_BITS'),
     },
     camera: {
-      rtspUrl: process.env.CAMERA_RTSP_URL,
+      rtspUrl: pick('CAMERA_RTSP_URL'),
+      rtspUrlAlternates: pick('CAMERA_RTSP_URL_ALTERNATES'),
+      httpSnapshotUrl: pick('CAMERA_HTTP_SNAPSHOT_URL'),
+      rtspUrls: pick('CAMERA_RTSP_URLS'),
+      user: pick('CAMERA_RTSP_USER'),
+      password: pick('CAMERA_RTSP_PASSWORD'),
+      path: pick('CAMERA_RTSP_PATH'),
+      port: pick('CAMERA_RTSP_PORT'),
     },
   };
+}
+
+function parseRfidIps(rawValue) {
+  if (!rawValue) return [];
+  return String(rawValue)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function getActiveRfidAdapters() {
+  if (Array.isArray(rfidAdapters) && rfidAdapters.length > 0) {
+    return rfidAdapters;
+  }
+  return rfidAdapter ? [rfidAdapter] : [];
 }
 
 function countOpenTransactions() {
@@ -95,6 +166,12 @@ function deviceRow(adapter, type, extra = {}) {
     mode: st.mode || adapter.constructor.name,
     lastSeen: ts.now(),
     ...extra,
+    ...(type === 'rfid'
+      ? {
+          lastError: st.lastError || null,
+          reconnecting: !!st.reconnecting,
+        }
+      : {}),
     ...(type === 'weighbridge'
       ? {
           currentWeight: st.currentWeight ?? 0,
@@ -106,8 +183,14 @@ function deviceRow(adapter, type, extra = {}) {
 
 function buildStatusSnapshot() {
   const cloudConnected = true;
+  const activeRfidAdapters = getActiveRfidAdapters();
+  const rfidConnectedCount = activeRfidAdapters.filter((a) => a?.isConnected?.()).length;
   return {
-    rfid: deviceRow(rfidAdapter, 'rfid'),
+    rfid: deviceRow(rfidAdapter, 'rfid', {
+      scanning: rfidScanning,
+      readerCount: activeRfidAdapters.length,
+      connectedReaders: rfidConnectedCount,
+    }),
     weighbridge: deviceRow(weighbridgeAdapter, 'weighbridge', {
       currentWeight: weighbridgeAdapter?.currentWeight ?? 0,
       isStable: weighbridgeAdapter?.isStable ?? false,
@@ -192,13 +275,17 @@ function handleAdapterError(deviceType, adapter, err) {
   const message = err && err.message ? err.message : String(err);
   logDeviceError(deviceType, message);
   adapter.connected = false;
+  if (adapter && typeof adapter === 'object') {
+    adapter._lastError = message;
+    adapter._reconnecting = true;
+  }
   emitStatusUpdate();
   scheduleReconnect(deviceType, adapter);
 }
 
-function wireRfidAdapter(adapter) {
-  adapter.onTagDetected((payload) => {
-    emitEvent('device:rfidTag', payload);
+function wireRfidAdapter(adapter, sourceLabel = null) {
+  RfidTagSelector.onSelected((payload) => {
+    emitEvent('device:rfidTag', { ...payload, locked: true });
     emitStatusUpdate();
     try {
       const WorkflowEngine = require('../engine/WorkflowEngine');
@@ -208,6 +295,20 @@ function wireRfidAdapter(adapter) {
     } catch (err) {
       logger.warn('WorkflowEngine RFID handler error', { message: err.message });
     }
+  });
+
+  adapter.onTagDetected((payload) => {
+    if (!rfidScanning) return;
+    const enrichedPayload = {
+      ...payload,
+      sourceReader: sourceLabel || payload?.readerName || null,
+      sourceIp: adapter?.config?.ip || null,
+    };
+    lastRfidSeen = enrichedPayload;
+    if (!RfidTagSelector.isLocked()) {
+      emitEvent('device:rfidLive', enrichedPayload);
+    }
+    RfidTagSelector.onRawTag(enrichedPayload);
   });
 
   adapter.onError((err) => handleAdapterError('rfid', adapter, err));
@@ -274,15 +375,42 @@ function createAdapters() {
 
   if (mock) {
     rfidAdapter = new MockRFIDAdapter(config.rfid);
+    rfidAdapters = [rfidAdapter];
+  } else {
+    const ipCandidates = parseRfidIps(config.rfid.ips);
+    if (config.rfid.ip && !ipCandidates.includes(config.rfid.ip)) {
+      ipCandidates.unshift(config.rfid.ip);
+    }
+    const uniqueIps = [...new Set(ipCandidates)];
+    const readerConfigs = uniqueIps.length > 0 ? uniqueIps : [config.rfid.ip].filter(Boolean);
+
+    rfidAdapters = readerConfigs.map((ip, index) =>
+      new RealRFIDAdapter({
+        ...config.rfid,
+        ip,
+        readerId: `reader-${index + 1}`,
+      }),
+    );
+    rfidAdapter = rfidAdapters[0] || null;
+  }
+
+  if (useMockWeighbridge()) {
     weighbridgeAdapter = new MockWeighbridgeAdapter(config.weighbridge);
+  } else {
+    weighbridgeAdapter = new RealWeighbridgeAdapter(config.weighbridge);
+  }
+
+  if (useWebcamCamera()) {
+    cameraAdapter = new WebcamCameraAdapter(config.camera);
+  } else if (mock) {
     cameraAdapter = new MockCameraAdapter(config.camera);
   } else {
-    rfidAdapter = new RealRFIDAdapter(config.rfid);
-    weighbridgeAdapter = new RealWeighbridgeAdapter(config.weighbridge);
     cameraAdapter = new RealCameraAdapter(config.camera);
   }
 
-  wireRfidAdapter(rfidAdapter);
+  getActiveRfidAdapters().forEach((adapter, index) =>
+    wireRfidAdapter(adapter, `reader-${index + 1}`),
+  );
   wireWeighbridgeAdapter(weighbridgeAdapter);
   wireCameraAdapter(cameraAdapter);
 }
@@ -291,6 +419,17 @@ async function connectAdapter(name, adapter) {
   try {
     await adapter.connect();
     retryState[name].attempts = 0;
+    if (adapter && typeof adapter === 'object') {
+      adapter._reconnecting = false;
+      adapter._lastError = null;
+    }
+    if (name === 'weighbridge' && typeof adapter.setSimulatedWeight === 'function') {
+      const simulateKg = getSimulateWeightKg();
+      if (simulateKg != null) {
+        adapter.setSimulatedWeight(simulateKg);
+        logger.info('Simulated weighbridge weight started', { kg: simulateKg });
+      }
+    }
     logger.logDevice(name, 'connect', `${name} connected`, {
       mode: adapter.constructor.name,
     });
@@ -312,10 +451,11 @@ async function start(windowGetter) {
   getMainWindow = windowGetter || (() => null);
 
   try {
+    RfidTagSelector.unlock();
     createAdapters();
 
     await Promise.all([
-      connectAdapter('rfid', rfidAdapter),
+      Promise.all(getActiveRfidAdapters().map((adapter) => connectAdapter('rfid', adapter))),
       connectAdapter('weighbridge', weighbridgeAdapter),
       connectAdapter('camera', cameraAdapter),
     ]);
@@ -325,8 +465,13 @@ async function start(windowGetter) {
     emitStatusUpdate();
     started = true;
 
+    syncRfidToRenderer();
+
     logger.info('DeviceMonitorService started', {
       mock: useMockHardware(),
+      mockWeighbridge: useMockWeighbridge(),
+      webcamCamera: useWebcamCamera(),
+      simulateWeightKg: getSimulateWeightKg(),
       rfid: rfidAdapter?.constructor?.name,
       weighbridge: weighbridgeAdapter?.constructor?.name,
       camera: cameraAdapter?.constructor?.name,
@@ -343,6 +488,13 @@ async function start(windowGetter) {
 
 function stop() {
   started = false;
+  rfidScanning = false;
+  try {
+    const MultiCameraPreviewService = require('./MultiCameraPreviewService');
+    MultiCameraPreviewService.stop();
+  } catch (_e) {
+    /* ignore */
+  }
   if (healthTimer) {
     clearInterval(healthTimer);
     healthTimer = null;
@@ -360,7 +512,7 @@ function stop() {
   };
 
   return Promise.all([
-    disconnect(rfidAdapter),
+    Promise.all(getActiveRfidAdapters().map((adapter) => disconnect(adapter))),
     disconnect(weighbridgeAdapter),
     disconnect(cameraAdapter),
   ]);
@@ -373,7 +525,12 @@ function getCurrentStatus() {
 }
 
 function getAdapters() {
-  return { rfid: rfidAdapter, weighbridge: weighbridgeAdapter, camera: cameraAdapter };
+  return {
+    rfid: rfidAdapter,
+    rfidAll: getActiveRfidAdapters(),
+    weighbridge: weighbridgeAdapter,
+    camera: cameraAdapter,
+  };
 }
 
 /** @deprecated use getCurrentStatus */
@@ -385,6 +542,80 @@ function emitToRenderer(channel, payload) {
   emitEvent(channel, payload);
 }
 
+function syncRfidToRenderer() {
+  const state = getRfidDisplayState();
+  if (!state?.tag) return;
+  if (!state.locked && !state.scanning) return;
+  if (state.locked) {
+    emitEvent('device:rfidTag', { ...state, locked: true });
+  } else {
+    emitEvent('device:rfidLive', state);
+  }
+}
+
+function getRfidDisplayState() {
+  const locked = RfidTagSelector.isLocked();
+  const payload = RfidTagSelector.getLockedPayload();
+  const live = !locked && rfidScanning && lastRfidSeen ? lastRfidSeen : null;
+  const source = payload || live;
+  return {
+    locked,
+    scanning: rfidScanning,
+    tag: source?.tag || (locked ? RfidTagSelector.getLockedTag() : null),
+    tid: source?.tid ?? null,
+    rssi: source?.rssi ?? null,
+    antenna: source?.antenna ?? null,
+    readerName: source?.readerName ?? null,
+    timestamp: source?.timestamp || ts.now(),
+  };
+}
+
+async function startRfidScan() {
+  RfidTagSelector.unlock();
+  lastRfidSeen = null;
+  const adapters = getActiveRfidAdapters();
+  await Promise.all(
+    adapters.map((adapter) =>
+      adapter?.startScanning ? adapter.startScanning() : Promise.resolve(),
+    ),
+  );
+  rfidScanning = true;
+  emitEvent('device:rfidScanState', { scanning: true });
+  emitStatusUpdate();
+}
+
+async function stopRfidScan() {
+  rfidScanning = false;
+  const adapters = getActiveRfidAdapters();
+  await Promise.all(
+    adapters.map((adapter) =>
+      adapter?.stopScanning ? adapter.stopScanning() : Promise.resolve(),
+    ),
+  );
+  lastRfidSeen = null;
+  emitEvent('device:rfidScanState', { scanning: false });
+  emitStatusUpdate();
+}
+function useRtspCamera() {
+  return !useWebcamCamera() && !useMockHardware();
+}
+
+function getCameraConfig() {
+  return buildConfig().camera;
+}
+
+function getTestConfig() {
+  const MultiCameraPreviewService = require('./MultiCameraPreviewService');
+  const cameras = MultiCameraPreviewService.getCamerasFromConfig(getCameraConfig());
+  return {
+    useWebcamCamera: useWebcamCamera(),
+    useRtspCamera: useRtspCamera(),
+    mockWeighbridge: useMockWeighbridge(),
+    simulateWeightKg: getSimulateWeightKg(),
+    cameras: cameras.map((c) => ({ id: c.id, label: c.label })),
+  };
+}
+
 module.exports = {
   start,
   stop,
@@ -393,4 +624,10 @@ module.exports = {
   getAdapters,
   getLatestCachedStatus: () => latestStatus,
   emitToRenderer,
+  getTestConfig,
+  getCameraConfig,
+  getRfidDisplayState,
+  syncRfidToRenderer,
+  startRfidScan,
+  stopRfidScan,
 };
