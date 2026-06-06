@@ -4,18 +4,29 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LibDir = Join-Path $Root "lib"
-$SdkDll = "D:\rfid-project-krishna\SDK Kit for ETS-IR 04\C#\Libs\ReaderAPI.dll"
+$LocalDll = Join-Path $LibDir "ReaderAPI.dll"
 
-if (-not (Test-Path $SdkDll)) {
-    $SdkDll = "D:\rfid-project-krishna\SDK Kit for ETS-IR 04\C#\Example\SampleCode\ReaderAPI.dll"
+if (Test-Path $LocalDll) {
+    Write-Host "Using existing ReaderAPI.dll from rfid-bridge/lib."
+} else {
+    $SdkDll = "D:\rfid-project-krishna\SDK Kit for ETS-IR 04\C#\Libs\ReaderAPI.dll"
+    if (-not (Test-Path $SdkDll)) {
+        $SdkDll = "D:\rfid-project-krishna\SDK Kit for ETS-IR 04\C#\Example\SampleCode\ReaderAPI.dll"
+    }
+
+    if (-not (Test-Path $SdkDll)) {
+        $force = $env:FORCE_RFID_BRIDGE_BUILD
+        if ($force -and $force.ToLower() -eq "true") {
+            throw "ReaderAPI.dll not found. Copy it to rfid-bridge\lib\ReaderAPI.dll (or set FORCE_RFID_BRIDGE_BUILD=true)."
+        }
+
+        Write-Warning "ReaderAPI.dll not found. Skipping rfid-bridge build."
+        exit 0
+    }
+
+    New-Item -ItemType Directory -Force -Path $LibDir | Out-Null
+    Copy-Item -Force $SdkDll (Join-Path $LibDir "ReaderAPI.dll")
 }
-
-if (-not (Test-Path $SdkDll)) {
-    throw "ReaderAPI.dll not found. Copy it to rfid-bridge\lib\ReaderAPI.dll"
-}
-
-New-Item -ItemType Directory -Force -Path $LibDir | Out-Null
-Copy-Item -Force $SdkDll (Join-Path $LibDir "ReaderAPI.dll")
 
 $msbuild = @(
     "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",

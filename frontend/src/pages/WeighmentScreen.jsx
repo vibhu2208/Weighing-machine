@@ -29,7 +29,6 @@ const TIMELINE_FALLBACK = [
 
 export default function WeighmentScreen() {
   const rawWeight = useDeviceStore((s) => s.displayWeight);
-  const isStable = useDeviceStore((s) => s.displayStable);
   const rfid = useDeviceStore((s) => s.rfid);
   const rfidLocked = useDeviceStore((s) => s.rfid.locked);
   const workflowState = useTransactionStore((s) => s.workflowState);
@@ -37,7 +36,7 @@ export default function WeighmentScreen() {
   const timeline = useTransactionStore((s) => s.timeline);
   const lastEvent = useTransactionStore((s) => s.lastEvent);
 
-  const kg = useThrottledValue(rawWeight, 250);
+  const kg = useThrottledValue(rawWeight, 100);
   const [vehicle, setVehicle] = useState(null);
   const [manualTruck, setManualTruck] = useState('');
   const [abortOpen, setAbortOpen] = useState(false);
@@ -206,8 +205,7 @@ export default function WeighmentScreen() {
     activeTransaction &&
     ['captured', 'printed', 'synced'].includes(activeTransaction.status);
 
-  const weightColor =
-    kg <= 0 ? 'text-slate-500' : isStable ? 'text-emerald-400' : 'text-amber-400';
+  const weightColor = kg <= 0 ? 'text-slate-500' : 'text-white';
 
   const truckForSave =
     vehicle?.vehicle_number ||
@@ -224,7 +222,9 @@ export default function WeighmentScreen() {
       : 'closed');
   const nextPass = ticketStatus === 'open' ? 'GROSS' : 'TARE';
   const canSaveTrip =
-    kg > 0 && !!truckForSave && (!testConfig?.useWebcamCamera || webcamReady);
+    rawWeight > 0 &&
+    !!truckForSave &&
+    (!testConfig?.useWebcamCamera || webcamReady);
 
   async function handleManualSubmit() {
     const truck = manualTruck.trim().toUpperCase();
@@ -287,14 +287,15 @@ export default function WeighmentScreen() {
       alert('Scan an RFID tag first (or enter truck number for unknown tags).');
       return;
     }
-    if (!kg || kg <= 0) {
+    const weightAtSave = Math.round(Number(rawWeight));
+    if (!weightAtSave || weightAtSave <= 0) {
       alert('No weight reading available.');
       return;
     }
     setSaving(true);
     try {
       let payload = {
-        weightKg: Math.round(kg),
+        weightKg: weightAtSave,
         truckNumber: truckForSave,
         rfidTag: displayTag || null,
         transactionId: activeTransaction?.id || null,
@@ -326,7 +327,7 @@ export default function WeighmentScreen() {
         const passLabel = result.pass === 'TARE' ? 'Tare captured' : 'Gross captured';
         store.pushTimeline({
           step: passLabel,
-          detail: `${Math.round(kg)} kg`,
+          detail: `${weightAtSave} kg`,
         });
 
         if (result.pass === 'TARE') {
@@ -373,7 +374,7 @@ export default function WeighmentScreen() {
       <header>
         <h1 className="text-2xl font-semibold text-white">Weighment</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Two-pass flow: RFID (empty) → tare · RFID (loaded) → gross · close ticket
+          Start RFID scan → tag locks → live weight updates → press Save to capture weight, cameras, and timestamp
         </p>
         {currentPass === 'TARE' && (
           <p className="mt-2 text-sm text-amber-300">Pass 1 — Empty truck (tare weight)</p>
@@ -396,10 +397,7 @@ export default function WeighmentScreen() {
               {Number(kg).toLocaleString('en-IN')}
               <span className="text-2xl ml-2 text-slate-500">kg</span>
             </p>
-            <Badge
-              label={isStable && kg > 0 ? 'STABLE' : 'UNSTABLE'}
-              variant={isStable && kg > 0 ? 'success' : 'warning'}
-            />
+            <Badge label={kg > 0 ? 'LIVE' : 'NO SIGNAL'} variant={kg > 0 ? 'success' : 'warning'} />
           </div>
 
           <div className="card p-4">

@@ -45,7 +45,12 @@ export default function DeviceStatusPanel() {
           return (
             <li key={key} className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-slate-200">{label}</div>
+                <div className="text-slate-200">
+                  {label}
+                  {dev.mode && String(dev.mode).startsWith('Mock') && (
+                    <span className="ml-1 text-[10px] text-amber-400/90">(simulator)</span>
+                  )}
+                </div>
                 <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                   {key === 'weighbridge' && dev.connected && (
                     <span>

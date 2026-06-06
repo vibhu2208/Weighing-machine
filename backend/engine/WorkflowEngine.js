@@ -26,6 +26,11 @@ const STATES = Object.freeze({
 const MIN_WEIGHT_KG =
   parseInt(process.env.MIN_WEIGHT_KG || '1000', 10) || 1000;
 const WEIGHMENT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Manual Save only — stable weight never auto-captures to DB. */
+function useManualWeighment() {
+  return true;
+}
 const ZERO_IGNORE_MS = 5000;
 const ERROR_RESET_MS = 3000;
 const IMAGE_CAPTURE_TIMEOUT_MS = 15000;
@@ -235,6 +240,7 @@ async function proceedFromVehicle(truckNumber, rfidTag, vehicle) {
 }
 
 async function handleStableWeight(payload) {
+  if (useManualWeighment()) return;
   if (engine.weightLocked) return;
   if (engine.state !== STATES.AWAITING_WEIGHT) return;
 
@@ -436,8 +442,11 @@ const WorkflowEngine = {
   },
 
   onStableWeight(payload) {
+    if (useManualWeighment()) return;
     handleStableWeight(payload).catch((err) => goError(err));
   },
+
+  useManualWeighment,
 
   onWeightZero() {
     if (engine.state !== STATES.AWAITING_WEIGHT) return;
@@ -466,13 +475,17 @@ const WorkflowEngine = {
 
     if (engine.state === STATES.ERROR) {
       resetToIdle();
-    } else if (isActiveWeighment()) {
+    } else if (!useManualWeighment() && isActiveWeighment()) {
       logger.warn('RFID ignored — weighment in progress on bridge', {
         tag,
         state: engine.state,
       });
       return;
-    } else if (engine.state !== STATES.IDLE && engine.state !== STATES.RFID_DETECTED) {
+    } else if (
+      !useManualWeighment() &&
+      engine.state !== STATES.IDLE &&
+      engine.state !== STATES.RFID_DETECTED
+    ) {
       logger.warn('RFID ignored — engine busy', { tag, state: engine.state });
       return;
     }
@@ -508,6 +521,18 @@ const WorkflowEngine = {
       return;
     }
 
+    if (useManualWeighment()) {
+      engine.context.truckNumber = vehicle.vehicle_number;
+      engine.context.vehicle = vehicle;
+      emit('workflow:rfidReady', {
+        tag,
+        vehicle,
+        truckNumber: vehicle.vehicle_number,
+        message: 'Tag locked — press Save when the weight on the display is correct',
+      });
+      return;
+    }
+
     proceedFromVehicle(vehicle.vehicle_number, tag, vehicle).catch((err) =>
       goError(err),
     );
@@ -527,6 +552,19 @@ const WorkflowEngine = {
     }
 
     const vehicle = VehicleService.findByNumber(normalized);
+    engine.context.truckNumber = normalized;
+    engine.context.vehicle = vehicle;
+
+    if (useManualWeighment()) {
+      emit('workflow:rfidReady', {
+        tag: engine.context.rfidTag || null,
+        vehicle,
+        truckNumber: normalized,
+        message: 'Truck identified — press Save when the weight on the display is correct',
+      });
+      return;
+    }
+
     proceedFromVehicle(
       normalized,
       engine.context.rfidTag || null,

@@ -83,6 +83,20 @@ async function bootstrapBackend() {
   const logger = safeRequire('../backend/utils/logger', 'logger');
   const log = logger && (logger.default || logger);
 
+  try {
+    const { PATHS } = require('../backend/utils/fileStorage');
+    log &&
+      log.info &&
+      log.info('Application storage paths', {
+        root: PATHS.ROOT,
+        database: PATHS.DATABASE,
+        logs: PATHS.LOGS,
+        packaged: app.isPackaged,
+      });
+  } catch (_e) {
+    /* optional */
+  }
+
   const tryInvoke = async (label, fn) => {
     if (typeof fn !== 'function') return;
     try {
@@ -115,7 +129,29 @@ async function bootstrapBackend() {
   }
 
   const ipc = safeRequire('./ipc', 'ipc-registry');
-  await tryInvoke('registerAllIPC', ipc && (ipc.registerAll || ipc.default?.registerAll));
+  const registerAll = ipc && (ipc.registerAll || ipc.default?.registerAll);
+  if (typeof registerAll !== 'function') {
+    throw new Error(
+      'IPC registry failed to load. Run "npm install" in weighbridge-app, then restart.',
+    );
+  }
+  try {
+    const result = registerAll();
+    log &&
+      log.info &&
+      log.info('[bootstrap] registerAllIPC OK', {
+        channels: result && result.count,
+        namespaces: result && result.registered,
+      });
+  } catch (err) {
+    const loadDetail =
+      ipc.loadErrors && ipc.loadErrors.length
+        ? `\nIPC load errors: ${ipc.loadErrors.map((e) => `${e.modulePath}: ${e.message}`).join('; ')}`
+        : '';
+    const message = `${err.message || err}${loadDetail}`;
+    log && log.error && log.error('[bootstrap] registerAllIPC failed', { message });
+    throw new Error(message);
+  }
 
   const rendererEvents = safeRequire('../backend/utils/rendererEvents', 'rendererEvents');
   if (rendererEvents && rendererEvents.setWindowGetter) {
@@ -126,6 +162,13 @@ async function bootstrapBackend() {
   if (backup && typeof backup.start === 'function') {
     await tryInvoke('startBackupService', () =>
       backup.start({ getWindow: () => mainWindow }),
+    );
+  }
+
+  const cloudBackup = safeRequire('../backend/services/CloudBackupService', 'CloudBackupService');
+  if (cloudBackup && typeof cloudBackup.start === 'function') {
+    await tryInvoke('startCloudBackupService', () =>
+      cloudBackup.start({ getWindow: () => mainWindow }),
     );
   }
 
@@ -222,8 +265,25 @@ async function loadRenderer() {
   }
 }
 
+function resolveLogHint() {
+  try {
+    const { PATHS } = require('../backend/utils/fileStorage');
+    return path.join(PATHS.LOGS, 'app.log');
+  } catch (_e) {
+    if (app.isPackaged) {
+      return path.join(app.getPath('userData'), 'weighbridge-data', 'logs', 'app.log');
+    }
+    return path.join(__dirname, '..', 'logs', 'app.log');
+  }
+}
+
 async function startup() {
   try {
+    if (app.isPackaged) {
+      const { initPackagedStorage } = require('../backend/utils/fileStorage');
+      initPackagedStorage(app.getPath('userData'));
+    }
+
     registerLocalMediaProtocol();
     createMainWindow();
     await bootstrapBackend();
@@ -231,11 +291,12 @@ async function startup() {
   } catch (err) {
     const message =
       (err && err.message) || 'Unknown error during application startup.';
+    const logPath = resolveLogHint();
     // eslint-disable-next-line no-console
     console.error('[main] Startup failure:', err);
     dialog.showErrorBox(
       'Weighbridge Manager failed to start',
-      `${message}\n\nPlease check logs/app.log for details.`,
+      `${message}\n\nLog file:\n${logPath}`,
     );
     app.exit(1);
   }

@@ -25,7 +25,7 @@ export function deviceToDotMap(status) {
   };
 }
 
-export default function useDeviceStatus(pollMs = 3000) {
+export default function useDeviceStatus(pollMs = 2000) {
   const [status, setStatus] = useState(EMPTY);
   const [dots, setDots] = useState(deviceToDotMap(EMPTY));
 

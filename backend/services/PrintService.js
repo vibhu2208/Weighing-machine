@@ -161,6 +161,13 @@ async function renderPDF(slip, transaction) {
       margins: { marginType: 'default' },
     });
     fs.writeFileSync(paths.pdf, pdf);
+    if (slip.slip_number) {
+      const reportCopy = normalizePath(
+        path.join(PATHS.REPORTS, `${slip.slip_number}.pdf`),
+      );
+      ensureDir(PATHS.REPORTS);
+      fs.copyFileSync(paths.pdf, reportCopy);
+    }
     return paths.pdf;
   } finally {
     win.destroy();

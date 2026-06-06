@@ -301,6 +301,9 @@ const TransactionService = {
     const allowed = [
       'gross_weight',
       'tare_weight',
+      'raw_gross_weight',
+      'raw_tare_weight',
+      'weight_offset_kg',
       'image_path',
       'tare_image_path',
       'camera_snapshots',

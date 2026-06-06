@@ -207,17 +207,6 @@ async function resolveTripCaptures({ imageBase64, imagePath, transactionId }) {
  */
 
 async function saveTripCapture(data = {}) {
-
-  const weightKg = Math.round(Number(data.weightKg));
-
-  if (!Number.isFinite(weightKg) || weightKg <= 0) {
-
-    throw new Error('Valid weight is required');
-
-  }
-
-
-
   const truckNumber = String(data.truckNumber || '')
 
     .trim()
@@ -235,68 +224,66 @@ async function saveTripCapture(data = {}) {
   const rfidTag = data.rfidTag ? String(data.rfidTag).trim().toUpperCase() : null;
 
   const weighment = TransactionService.getVehicleWeighmentInfo(truckNumber, rfidTag);
+  const pass = weighment.ticketStatus === 'open' ? 'GROSS' : 'TARE';
+
+  const DeviceMonitorService = require('./DeviceMonitorService');
+  const WeightAdjustmentService = require('./WeightAdjustmentService');
+
+  let rawKg = DeviceMonitorService.getCurrentRawWeight();
+  if (!Number.isFinite(rawKg) || rawKg <= 0) {
+    rawKg = Math.round(Number(data.weightKg));
+  }
+
+  const split = WeightAdjustmentService.split(rawKg, { pass });
+  const weightKg = split.adjustedKg;
+
+  if (!Number.isFinite(weightKg) || weightKg <= 0) {
+    throw new Error('Valid weight is required');
+  }
+
+  try {
+    if (typeof DeviceMonitorService.stopRfidScan === 'function') {
+      await DeviceMonitorService.stopRfidScan();
+    }
+  } catch (err) {
+    logger.warn('stopRfidScan after save failed', { message: err.message });
+  }
+
+  let result;
+  if (weighment.ticketStatus === 'open') {
+    result = await saveGrossPass({
+      openTrip: TransactionService.findOpenTripForVehicle(truckNumber, rfidTag),
+      weightKg,
+      rawWeightKg: split.rawKg,
+      weightOffsetKg: split.offsetKg,
+      imageBase64: data.imageBase64,
+      imagePath: data.imagePath || null,
+      truckNumber,
+      rfidTag,
+    });
+  } else {
+    result = await saveTarePass({
+      weightKg,
+      rawWeightKg: split.rawKg,
+      weightOffsetKg: split.offsetKg,
+      imageBase64: data.imageBase64,
+      imagePath: data.imagePath || null,
+      truckNumber,
+      rfidTag,
+      transactionId: data.transactionId || null,
+    });
+  }
 
 
 
   try {
-
     const DeviceMonitorService = require('./DeviceMonitorService');
-
-    if (typeof DeviceMonitorService.stopRfidScan === 'function') {
-
-      await DeviceMonitorService.stopRfidScan();
-
+    if (typeof DeviceMonitorService.invalidateStatusCountCache === 'function') {
+      DeviceMonitorService.invalidateStatusCountCache();
     }
-
-  } catch (err) {
-
-    logger.warn('stopRfidScan after save failed', { message: err.message });
-
+  } catch (_e) {
+    /* ignore */
   }
-
-
-
-  let result;
-
-  if (weighment.ticketStatus === 'open') {
-
-    result = await saveGrossPass({
-
-      openTrip: TransactionService.findOpenTripForVehicle(truckNumber, rfidTag),
-
-      weightKg,
-
-      imageBase64: data.imageBase64,
-
-      imagePath: data.imagePath || null,
-
-      truckNumber,
-
-      rfidTag,
-
-    });
-
-  } else {
-
-    result = await saveTarePass({
-
-      weightKg,
-
-      imageBase64: data.imageBase64,
-
-      imagePath: data.imagePath || null,
-
-      truckNumber,
-
-      rfidTag,
-
-      transactionId: data.transactionId || null,
-
-    });
-
-  }
-
-
 
   return result;
 
@@ -305,19 +292,14 @@ async function saveTripCapture(data = {}) {
 
 
 async function saveTarePass({
-
   weightKg,
-
+  rawWeightKg,
+  weightOffsetKg,
   imageBase64,
-
   imagePath,
-
   truckNumber,
-
   rfidTag,
-
   transactionId,
-
 }) {
 
   let txnId = transactionId || null;
@@ -370,16 +352,16 @@ async function saveTarePass({
 
 
 
+  const capturedAt = ts.now();
   const transaction = TransactionService.updateFields(txnId, {
-
     tare_weight: weightKg,
-
+    raw_tare_weight: rawWeightKg,
+    weight_offset_kg: weightOffsetKg,
     tare_image_path: primaryPath,
-
     image_path: primaryPath,
-
+    timestamp_in: existing?.timestamp_in || capturedAt,
+    status: TRANSACTION_STATUS.WEIGHING,
     camera_snapshots: mergeCameraSnapshots(existing?.camera_snapshots, 'tare', snapshots),
-
   });
 
 
@@ -425,19 +407,14 @@ async function saveTarePass({
 
 
 async function saveGrossPass({
-
   openTrip,
-
   weightKg,
-
+  rawWeightKg,
+  weightOffsetKg,
   imageBase64,
-
   imagePath,
-
   truckNumber,
-
   rfidTag,
-
 }) {
 
   if (!openTrip) {
@@ -476,18 +453,15 @@ async function saveGrossPass({
 
 
 
+  const capturedAt = ts.now();
   const transaction = TransactionService.updateFields(txnId, {
-
     gross_weight: weightKg,
-
+    raw_gross_weight: rawWeightKg,
+    weight_offset_kg: weightOffsetKg,
     image_path: primaryPath,
-
-    timestamp_out: ts.now(),
-
+    timestamp_out: capturedAt,
     status: TRANSACTION_STATUS.CAPTURED,
-
     camera_snapshots: mergeCameraSnapshots(openTrip.camera_snapshots, 'gross', snapshots),
-
   });
 
 

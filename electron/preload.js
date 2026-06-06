@@ -86,7 +86,11 @@ const electronAPI = {
   backup: buildNamespace('backup', [
     'getList',
     'manualBackup',
+    'manualLocalBackup',
     'getLastBackupTime',
+    'getCloudStatus',
+    'listRemoteBackups',
+    'restoreBackup',
   ]),
 
   storage: buildNamespace('storage', [
@@ -97,6 +101,8 @@ const electronAPI = {
   ]),
 
   settings: buildNamespace('settings', ['get', 'set', 'getAll']),
+
+  auth: buildNamespace('auth', ['verifyPin', 'lockAdvanced', 'getSession']),
 
   /**
    * Subscribe to backend push events (device status, weight ticks, sync progress, etc.).

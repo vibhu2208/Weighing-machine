@@ -21,6 +21,10 @@ database/*
 !database/.gitkeep
 uploads/*
 !uploads/.gitkeep
+reports/*
+!reports/.gitkeep
+images/*
+!images/.gitkeep
 backups/*
 !backups/.gitkeep
 logs/*

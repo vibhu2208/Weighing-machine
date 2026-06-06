@@ -254,12 +254,6 @@ class WeightBridgeService {
     if (this.lastEmittedWeight === weight) return;
     this.lastEmittedWeight = weight;
 
-    logger.logDevice('weighbridge', 'weight-change', 'Weight Changed', {
-      weight,
-      stableWeight: this.latestStableWeight,
-      isStable: this.isStable,
-    });
-
     for (const handler of this.weightChangedHandlers) {
       try {
         handler({

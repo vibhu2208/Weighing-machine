@@ -19,6 +19,8 @@ class MockWeighbridgeAdapter extends WeighbridgeAdapter {
     this._debounceTimer = null;
     this._stableFired = false;
     this._wasNonZero = false;
+    this._lastEmittedWeight = null;
+    this._lastEmittedStable = null;
   }
 
   async connect() {
@@ -83,8 +85,14 @@ class MockWeighbridgeAdapter extends WeighbridgeAdapter {
       timestamp: ts.now(),
     };
 
-    if (typeof this.onWeightUpdateCallback === 'function') {
-      this.onWeightUpdateCallback(payload);
+    const weightChanged = this._lastEmittedWeight !== weight;
+    const stableChanged = this._lastEmittedStable !== stable;
+    if (weightChanged || stableChanged) {
+      this._lastEmittedWeight = weight;
+      this._lastEmittedStable = stable;
+      if (typeof this.onWeightUpdateCallback === 'function') {
+        this.onWeightUpdateCallback(payload);
+      }
     }
 
     if (stable && !this._stableFired) {

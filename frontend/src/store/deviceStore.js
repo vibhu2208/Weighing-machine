@@ -28,6 +28,7 @@ const useDeviceStore = create((set) => ({
         ...s.rfid,
         connected: !!status?.rfid?.connected,
         scanning: !!status?.rfid?.scanning,
+        mode: status?.rfid?.mode || null,
         lastSeen: status?.rfid?.lastSeen || s.rfid.lastSeen,
         lastError: status?.rfid?.lastError ?? s.rfid.lastError ?? null,
         reconnecting: !!status?.rfid?.reconnecting,
@@ -35,6 +36,7 @@ const useDeviceStore = create((set) => ({
       weighbridge: {
         ...s.weighbridge,
         connected: !!status?.weighbridge?.connected,
+        mode: status?.weighbridge?.mode || null,
         currentWeight: status?.weighbridge?.currentWeight ?? s.weighbridge.currentWeight,
         isStable: !!status?.weighbridge?.isStable,
         lastSeen: status?.weighbridge?.lastSeen || s.weighbridge.lastSeen,
@@ -42,6 +44,7 @@ const useDeviceStore = create((set) => ({
       camera: {
         ...s.camera,
         connected: !!status?.camera?.connected,
+        mode: status?.camera?.mode || null,
         lastSeen: status?.camera?.lastSeen || s.camera.lastSeen,
       },
       cloud: {

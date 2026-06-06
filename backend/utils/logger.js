@@ -132,6 +132,8 @@ if (IS_DEV) {
   );
 }
 
+const SKIP_DEVICE_LOG_DB = new Set(['weight-change']);
+
 function logDevice(deviceType, eventType, message, metadata = {}) {
   logger.info(message, {
     type: 'device',
@@ -139,6 +141,7 @@ function logDevice(deviceType, eventType, message, metadata = {}) {
     eventType,
     ...metadata,
   });
+  if (SKIP_DEVICE_LOG_DB.has(eventType)) return;
   try {
     const DeviceLogService = require('../services/DeviceLogService');
     DeviceLogService.insert({

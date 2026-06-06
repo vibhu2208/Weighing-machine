@@ -3,11 +3,14 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 const TransactionService = require('./TransactionService');
+const SettingsService = require('./SettingsService');
+const { toPublicTransaction } = require('../utils/transactionPublic');
 const { SYNC_STATUS } = require('../utils/constants');
 
+/** Settings UI + SQLite settings table; falls back to .env via SettingsService. */
 function getCloudConfig() {
-  const url = (process.env.CLOUD_SYNC_URL || '').trim();
-  const token = (process.env.CLOUD_SYNC_TOKEN || '').trim();
+  const url = (SettingsService.get('CLOUD_SYNC_URL') || '').trim();
+  const token = (SettingsService.get('CLOUD_SYNC_TOKEN') || '').trim();
   return { url, token };
 }
 
@@ -50,11 +53,12 @@ const SyncService = {
     const endpoint = `${url.replace(/\/$/, '')}/transactions`;
 
     try {
+      const publicTxn = toPublicTransaction(transaction);
       const res = await axios.post(
         endpoint,
         {
-          ...transaction,
-          vehicle: transaction.vehicle || null,
+          ...publicTxn,
+          vehicle: publicTxn.vehicle || transaction.vehicle || null,
         },
         {
           headers: {

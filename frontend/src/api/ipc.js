@@ -115,7 +115,11 @@ export const reportAPI = makeProxy('reports', [
 export const backupAPI = makeProxy('backup', [
   'getList',
   'manualBackup',
+  'manualLocalBackup',
   'getLastBackupTime',
+  'getCloudStatus',
+  'listRemoteBackups',
+  'restoreBackup',
 ]);
 
 export const storageAPI = makeProxy('storage', [
@@ -126,6 +130,8 @@ export const storageAPI = makeProxy('storage', [
 ]);
 
 export const settingsAPI = makeProxy('settings', ['get', 'set', 'getAll']);
+
+export const authAPI = makeProxy('auth', ['verifyPin', 'lockAdvanced', 'getSession']);
 
 export const workflowAPI = makeProxy('workflow', [
   'getState',
@@ -179,6 +185,7 @@ export default {
   backupAPI,
   storageAPI,
   settingsAPI,
+  authAPI,
   workflowAPI,
   subscribe,
 };

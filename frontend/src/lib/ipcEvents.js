@@ -126,15 +126,10 @@ export function dispatchIpcEvent(channel, payload) {
 
     case 'workflow:weightUpdate':
       if (payload?.isStable) {
-        const label =
-          payload.pass === 'TARE' ? 'Tare weight captured' : 'Gross weight captured';
-        tx.pushTimeline({ step: label, detail: `${payload.weight} kg` });
-        if (tx.activeTransaction?.id === payload.transactionId) {
-          const patch = { ...tx.activeTransaction };
-          if (payload.pass === 'TARE') patch.tare_weight = payload.weight;
-          else patch.gross_weight = payload.weight;
-          tx.updateTransaction(patch);
-        }
+        tx.pushTimeline({
+          step: 'Stable weight on scale',
+          detail: `${payload.weight} kg — press Save to register`,
+        });
       }
       tx.setLastEvent(payload);
       break;
@@ -175,6 +170,26 @@ export function dispatchIpcEvent(channel, payload) {
         dev.clearRfidScan();
       }
       tx.resetActive();
+      break;
+
+    case 'workflow:rfidReady':
+      if (payload?.tag) {
+        dev.lockRfid(payload.tag, {
+          tag: payload.tag,
+          timestamp: new Date().toISOString(),
+          locked: true,
+        });
+      }
+      tx.setWorkflowState('IDLE');
+      tx.pushTimeline({
+        step: 'RFID locked',
+        detail: payload?.truckNumber || payload?.tag || null,
+      });
+      tx.pushTimeline({
+        step: 'Live weight — press Save when ready',
+        detail: null,
+      });
+      tx.setLastEvent(payload);
       break;
 
     case 'workflow:unknownRFID':
@@ -228,6 +243,7 @@ export const WORKFLOW_CHANNELS = [
   'workflow:imageMissing',
   'workflow:complete',
   'workflow:error',
+  'workflow:rfidReady',
   'workflow:unknownRFID',
   'workflow:duplicateTransaction',
   'workflow:printFailed',

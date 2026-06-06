@@ -3,6 +3,7 @@
 const { v4: uuidv4 } = require('uuid');
 const DeviceMonitorService = require('../../backend/services/DeviceMonitorService');
 const { saveTripCapture } = require('../../backend/services/TripCaptureService');
+const { toPublicTransaction } = require('../../backend/utils/transactionPublic');
 const logger = require('../../backend/utils/logger');
 const NAMESPACE = 'devices';
 
@@ -255,7 +256,11 @@ function register(ipcMain) {
         transactionId: result.transaction?.id,
       });
 
-      return { ok: true, ...result };
+      return {
+        ok: true,
+        ...result,
+        transaction: toPublicTransaction(result.transaction),
+      };
     } catch (err) {
       logger.warn('saveTripCapture failed', { message: err.message });
       return { ok: false, error: err.message };

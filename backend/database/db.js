@@ -9,11 +9,15 @@ const { dialog } = (() => {
   }
 })();
 
+const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const ts = require('../utils/timestamp');
 const { PATHS, ensureDir } = require('../utils/fileStorage');
 const migration001 = require('./migrations/001_initial');
 const migration002 = require('./migrations/002_tare_image');
 const migration003 = require('./migrations/003_camera_snapshots');
+const migration004 = require('./migrations/004_cloud_uploads');
+const migration005 = require('./migrations/005_raw_weights');
 
 let db = null;
 
@@ -34,7 +38,7 @@ function runMigrations(handle = db) {
     throw new Error('runMigrations: database is not initialised');
   }
 
-  const migrations = [migration001, migration002, migration003];
+  const migrations = [migration001, migration002, migration003, migration004, migration005];
 
   const apply = handle.transaction(() => {
     for (const migration of migrations) {
@@ -57,6 +61,30 @@ function runMigrations(handle = db) {
     logger.error('Migration failed', { message: err.message, code: err.code });
     throw err;
   }
+}
+
+/** Ensure a default admin exists on fresh installs (PIN: 1234). */
+function ensureDefaultAdmin(handle = db) {
+  if (!handle) return;
+
+  const existing = handle
+    .prepare(
+      `SELECT id FROM operators
+       WHERE role = 'admin' AND status = 'active' LIMIT 1`,
+    )
+    .get();
+
+  if (existing) return;
+
+  const now = ts.now();
+  handle
+    .prepare(
+      `INSERT INTO operators (id, name, pin, role, status, created_at)
+       VALUES (?, 'Admin', '1234', 'admin', 'active', ?)`,
+    )
+    .run(uuidv4(), now);
+
+  logger.info('Default admin operator created', { pin: '1234' });
 }
 
 /** Open (or create) the SQLite database. Returns the singleton. */
@@ -82,6 +110,7 @@ function initDatabase() {
     logger.info('SQLite connected', { path: dbPath, mode: 'WAL' });
 
     runMigrations(db);
+    ensureDefaultAdmin(db);
 
     try {
       const TransactionService = require('../services/TransactionService');

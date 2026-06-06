@@ -4,18 +4,58 @@ const fs = require('fs');
 const path = require('path');
 const ts = require('./timestamp');
 
-/** Project root resolved relative to this file: backend/utils -> ../.. */
-const ROOT = path.resolve(__dirname, '..', '..');
+/** Project root resolved relative to this file: backend/utils -> ../..
+ * In packaged builds the code runs from `app.asar` (a file), so runtime
+ * data must live in Electron's writable `userData` directory.
+ * Call `initPackagedStorage()` from main.js before loading other backend modules. */
+const isInAsar = String(__dirname).includes('.asar');
+let ROOT = path.resolve(__dirname, '..', '..');
 
-const PATHS = Object.freeze({
-  ROOT,
-  UPLOADS: path.join(ROOT, 'uploads'),
-  BACKUPS: path.join(ROOT, 'backups'),
-  LOGS: path.join(ROOT, 'logs'),
-  DATABASE: path.join(ROOT, 'database'),
-  THERMAL_QUEUE: path.join(ROOT, 'logs', 'thermal_queue'),
-  REPRINT_QUEUE: path.join(ROOT, 'logs', 'reprint_queue.json'),
-});
+function buildPaths(root) {
+  return {
+    ROOT: root,
+    UPLOADS: path.join(root, 'uploads'),
+    REPORTS: path.join(root, 'reports'),
+    IMAGES: path.join(root, 'images'),
+    BACKUPS: path.join(root, 'backups'),
+    CLOUD_BACKUPS: path.join(root, 'backups', 'cloud'),
+    LOGS: path.join(root, 'logs'),
+    DATABASE: path.join(root, 'database'),
+    THERMAL_QUEUE: path.join(root, 'logs', 'thermal_queue'),
+    REPRINT_QUEUE: path.join(root, 'logs', 'reprint_queue.json'),
+  };
+}
+
+/** Mutable so `initPackagedStorage` can repoint paths for installed builds. */
+const PATHS = buildPaths(ROOT);
+
+function applyRoot(root) {
+  ROOT = root;
+  const next = buildPaths(root);
+  Object.keys(next).forEach((key) => {
+    PATHS[key] = next[key];
+  });
+}
+
+function ensureRuntimeDirs() {
+  [
+    PATHS.UPLOADS,
+    PATHS.REPORTS,
+    PATHS.IMAGES,
+    PATHS.BACKUPS,
+    PATHS.CLOUD_BACKUPS,
+    PATHS.LOGS,
+    PATHS.DATABASE,
+    PATHS.THERMAL_QUEUE,
+  ].forEach(ensureDir);
+}
+
+/** Must be called from Electron main before any backend module loads (packaged app). */
+function initPackagedStorage(userDataPath) {
+  applyRoot(path.join(userDataPath, 'weighbridge-data'));
+  ensureRuntimeDirs();
+  return PATHS;
+}
 
 function normalizePath(p) {
   return path.normalize(path.resolve(p));
@@ -30,9 +70,9 @@ function ensureDir(dir) {
   return target;
 }
 
-[PATHS.UPLOADS, PATHS.BACKUPS, PATHS.LOGS, PATHS.DATABASE, PATHS.THERMAL_QUEUE].forEach(
-  ensureDir,
-);
+if (!isInAsar) {
+  ensureRuntimeDirs();
+}
 
 /**
  * Path for a transaction's captured image:
@@ -101,6 +141,38 @@ function deleteImage(transactionId, date) {
   return removed;
 }
 
+const WALK_YIELD_EVERY_DIRS = 40;
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function walkUploadTreeAsync(onFile) {
+  if (!fs.existsSync(PATHS.UPLOADS)) return;
+  const stack = [PATHS.UPLOADS];
+  let dirsSinceYield = 0;
+  while (stack.length) {
+    if (dirsSinceYield >= WALK_YIELD_EVERY_DIRS) {
+      dirsSinceYield = 0;
+      // eslint-disable-next-line no-await-in-loop
+      await yieldToEventLoop();
+    }
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    dirsSinceYield += 1;
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) stack.push(full);
+      else if (ent.isFile() && ent.name.endsWith('.jpg')) onFile(normalizePath(full), ent.name);
+    }
+  }
+}
+
 function walkUploadTree(onFile) {
   if (!fs.existsSync(PATHS.UPLOADS)) return;
   const stack = [PATHS.UPLOADS];
@@ -130,28 +202,41 @@ function listImages(date) {
     .map((f) => normalizePath(path.join(dir, f)));
 }
 
+function tallyUploadFile(filePath, totals) {
+  if (filePath.includes('_slip.')) return;
+  try {
+    const st = fs.statSync(filePath);
+    if (!st.isFile()) return;
+    totals.totalImages += 1;
+    totals.totalSizeBytes += st.size;
+    const mtime = st.mtime.toISOString();
+    if (!totals.oldestDate || mtime < totals.oldestDate) totals.oldestDate = mtime;
+    if (!totals.newestDate || mtime > totals.newestDate) totals.newestDate = mtime;
+  } catch {
+    /* skip */
+  }
+}
+
 function getStorageStats() {
-  let totalImages = 0;
-  let totalSizeBytes = 0;
-  let oldestDate = null;
-  let newestDate = null;
+  const totals = {
+    totalImages: 0,
+    totalSizeBytes: 0,
+    oldestDate: null,
+    newestDate: null,
+  };
+  walkUploadTree((filePath) => tallyUploadFile(filePath, totals));
+  return totals;
+}
 
-  walkUploadTree((filePath) => {
-    if (filePath.includes('_slip.')) return;
-    try {
-      const st = fs.statSync(filePath);
-      if (!st.isFile()) return;
-      totalImages += 1;
-      totalSizeBytes += st.size;
-      const mtime = st.mtime.toISOString();
-      if (!oldestDate || mtime < oldestDate) oldestDate = mtime;
-      if (!newestDate || mtime > newestDate) newestDate = mtime;
-    } catch {
-      /* skip */
-    }
-  });
-
-  return { totalImages, totalSizeBytes, oldestDate, newestDate };
+async function getStorageStatsAsync() {
+  const totals = {
+    totalImages: 0,
+    totalSizeBytes: 0,
+    oldestDate: null,
+    newestDate: null,
+  };
+  await walkUploadTreeAsync((filePath) => tallyUploadFile(filePath, totals));
+  return totals;
 }
 
 function deleteOlderThan(days = 90) {
@@ -206,6 +291,7 @@ function toFileUrl(filePath) {
 
 module.exports = {
   PATHS,
+  initPackagedStorage,
   normalizePath,
   ensureDir,
   getImagePath,
@@ -216,6 +302,7 @@ module.exports = {
   deleteImage,
   listImages,
   getStorageStats,
+  getStorageStatsAsync,
   deleteOlderThan,
   getBackupPath,
   getBackupLogPath,

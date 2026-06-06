@@ -32,8 +32,9 @@ const ENV_DEFAULTS = Object.freeze({
   BACKUP_INTERVAL_HOURS: String(DEFAULTS.BACKUP_INTERVAL_HOURS),
   MAX_RETRY_ATTEMPTS: String(DEFAULTS.MAX_RETRY_ATTEMPTS),
   LOG_LEVEL: DEFAULTS.LOG_LEVEL,
-  USE_MOCK_HARDWARE: 'true',
+  USE_MOCK_HARDWARE: 'false',
   AUTO_BACKUP: 'true',
+  CLOUD_BACKUP_ENABLED: 'true',
   IMAGE_AUTO_CLEANUP: 'true',
   IMAGE_RETENTION_DAYS: '90',
   COMPANY_NAME: 'Weighbridge Manager',
@@ -42,6 +43,13 @@ const ENV_DEFAULTS = Object.freeze({
   PRINTER_NAME: '',
   PAPER_SIZE: 'A4',
   DB_PATH: './database/weighbridge.db',
+  WEIGHT_ADJUSTMENT_ENABLED: 'false',
+  WEIGHT_OFFSET_KG: '0',
+  AWS_ACCESS_KEY_ID: '',
+  AWS_SECRET_ACCESS_KEY: '',
+  AWS_REGION: 'ap-south-1',
+  AWS_S3_BUCKET: 'weighbridge-management-system',
+  CLOUD_BACKUP_INTERVAL_MINUTES: '60',
 });
 
 function resolveDefault(key) {

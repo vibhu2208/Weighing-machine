@@ -2,6 +2,12 @@
  * electron-builder configuration
  * Docs: https://www.electron.build/configuration/configuration
  */
+const fs = require('fs');
+const path = require('path');
+
+const rfidBridgeExePath = path.join(__dirname, 'rfid-bridge', 'bin', 'rfid-bridge.exe');
+const includeRfidBridge = fs.existsSync(rfidBridgeExePath);
+
 module.exports = {
   appId: 'com.yourcompany.weighbridge',
   productName: 'Weighbridge Manager',
@@ -25,11 +31,15 @@ module.exports = {
   extraResources: [
     { from: 'database', to: 'database', filter: ['**/*'] },
     { from: 'uploads', to: 'uploads', filter: ['**/*'] },
-    {
-      from: 'rfid-bridge/bin',
-      to: 'rfid-bridge',
-      filter: ['rfid-bridge.exe', 'ReaderAPI.dll'],
-    },
+    ...(includeRfidBridge
+      ? [
+          {
+            from: 'rfid-bridge/bin',
+            to: 'rfid-bridge',
+            filter: ['rfid-bridge.exe', 'ReaderAPI.dll'],
+          },
+        ]
+      : []),
   ],
 
   asarUnpack: ['**/better-sqlite3/**/*'],
@@ -37,6 +47,11 @@ module.exports = {
   win: {
     target: [{ target: 'nsis', arch: ['x64'] }],
     artifactName: '${productName}-Setup-${version}.${ext}',
+    // Local/offline builds: skip Windows code signing.
+    // This avoids electron-builder downloading/extracting winCodeSign,
+    // which fails on machines without privilege to create symlinks.
+    sign: null,
+    signAndEditExecutable: false,
   },
 
   nsis: {

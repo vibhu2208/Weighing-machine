@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  authAPI,
   backupAPI,
   deviceAPI,
   reportAPI,
@@ -7,6 +8,7 @@ import {
   storageAPI,
   syncAPI,
   transactionAPI,
+  subscribe,
 } from '../api/ipc.js';
 import RfidPowerControl from '../components/settings/RfidPowerControl.jsx';
 
@@ -26,6 +28,15 @@ function validateKey(key, value) {
   }
   return null;
 }
+
+const AWS_SETTING_KEYS = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_REGION',
+  'AWS_S3_BUCKET',
+  'CLOUD_BACKUP_INTERVAL_MINUTES',
+  'CLOUD_BACKUP_ENABLED',
+]);
 
 const FIELDS = {
   hardware: [
@@ -90,7 +101,8 @@ const FIELDS = {
       type: 'select',
       options: ['info', 'warn', 'error', 'debug'],
     },
-    { key: 'AUTO_BACKUP', label: 'Auto backup', type: 'toggle' },
+    { key: 'AUTO_BACKUP', label: 'Auto local backup', type: 'toggle' },
+    { key: 'CLOUD_BACKUP_ENABLED', label: 'Auto cloud backup (S3)', type: 'toggle' },
     {
       key: 'BACKUP_INTERVAL_HOURS',
       label: 'Backup interval',
@@ -104,6 +116,28 @@ const FIELDS = {
     },
     { key: 'IMAGE_AUTO_CLEANUP', label: 'Auto image cleanup', type: 'toggle' },
     { key: 'IMAGE_RETENTION_DAYS', label: 'Delete images older than (days)', type: 'number' },
+  ],
+  s3: [
+    { key: 'AWS_ACCESS_KEY_ID', label: 'AWS Access Key ID', type: 'text' },
+    { key: 'AWS_SECRET_ACCESS_KEY', label: 'AWS Secret Access Key', type: 'password' },
+    { key: 'AWS_REGION', label: 'AWS Region', type: 'text' },
+    { key: 'AWS_S3_BUCKET', label: 'S3 Bucket name', type: 'text' },
+    {
+      key: 'CLOUD_BACKUP_INTERVAL_MINUTES',
+      label: 'Cloud backup interval',
+      type: 'select',
+      options: [
+        { v: '15', l: '15 minutes' },
+        { v: '30', l: '30 minutes' },
+        { v: '60', l: '1 hour' },
+        { v: '120', l: '2 hours' },
+        { v: '240', l: '4 hours' },
+      ],
+    },
+  ],
+  advance: [
+    { key: 'WEIGHT_ADJUSTMENT_ENABLED', label: 'Enable weight increase', type: 'toggle' },
+    { key: 'WEIGHT_OFFSET_KG', label: 'Increase loaded truck weight by (kg)', type: 'number' },
   ],
   printer: [
     { key: 'PRINTER_NAME', label: 'Default printer', type: 'text' },
@@ -122,21 +156,39 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [tests, setTests] = useState({});
   const [showToken, setShowToken] = useState(false);
+  const [showAwsSecret, setShowAwsSecret] = useState(false);
   const [queue, setQueue] = useState({ pending: 0 });
   const [backups, setBackups] = useState([]);
   const [lastBackup, setLastBackup] = useState(null);
   const [storage, setStorage] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState(null);
+  const [cloudProgress, setCloudProgress] = useState(null);
+  const [cloudMessage, setCloudMessage] = useState(null);
+  const [remoteBackups, setRemoteBackups] = useState([]);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [showRestore, setShowRestore] = useState(false);
   const [thermalQueue, setThermalQueue] = useState([]);
+  const [advanceUnlocked, setAdvanceUnlocked] = useState(false);
+  const [adminPin, setAdminPin] = useState('');
+  const [advanceError, setAdvanceError] = useState('');
+  const [advanceMessage, setAdvanceMessage] = useState('');
   const timers = useRef({});
 
   const refreshBackup = useCallback(async () => {
-    const [list, last] = await Promise.all([
+    const [list, last, cloud] = await Promise.all([
       backupAPI.getList(),
       backupAPI.getLastBackupTime(),
+      backupAPI.getCloudStatus().catch(() => null),
     ]);
     setBackups(Array.isArray(list) ? list : []);
     setLastBackup(last);
+    setCloudStatus(cloud);
+  }, []);
+
+  const refreshRemoteBackups = useCallback(async () => {
+    const list = await backupAPI.listRemoteBackups();
+    setRemoteBackups(Array.isArray(list) ? list : []);
   }, []);
 
   const refreshStorage = useCallback(async () => {
@@ -152,6 +204,26 @@ export default function Settings() {
     refreshBackup().catch(console.error);
     refreshStorage().catch(console.error);
   }, [refreshBackup, refreshStorage]);
+
+  useEffect(() => {
+    const off = [
+      subscribe('cloudBackup:progress', (p) => setCloudProgress(p?.detail || p?.step || '')),
+      subscribe('cloudBackup:complete', (p) => {
+        setCloudProgress(null);
+        setCloudMessage(
+          p?.skipped
+            ? 'No internet — backup queued for next cycle'
+            : 'Cloud backup completed successfully',
+        );
+        refreshBackup();
+      }),
+      subscribe('cloudBackup:failed', (p) => {
+        setCloudProgress(null);
+        setCloudMessage(p?.message || 'Cloud backup failed — see logs/backup.log');
+      }),
+    ];
+    return () => off.forEach((fn) => fn && fn());
+  }, [refreshBackup]);
 
   const scheduleSave = useCallback((key, value) => {
     const err = validateKey(key, value);
@@ -171,15 +243,67 @@ export default function Settings() {
         await settingsAPI.set(key, value);
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
+        if (AWS_SETTING_KEYS.has(key)) {
+          refreshBackup().catch(console.error);
+        }
       } catch (e) {
         setErrors((er) => ({ ...er, [key]: e.message }));
       }
     }, 500);
-  }, []);
+  }, [refreshBackup]);
 
   function update(key, value) {
     setValues((v) => ({ ...v, [key]: value }));
     scheduleSave(key, value);
+    if (key === 'WEIGHT_ADJUSTMENT_ENABLED') {
+      setAdvanceMessage(
+        value === 'true'
+          ? 'Weight increase enabled — applies on next scale reading'
+          : 'Weight increase disabled — using live scale weight',
+      );
+      setTimeout(() => setAdvanceMessage(''), 4000);
+    }
+  }
+
+  async function unlockAdvanceSetting() {
+    setAdvanceError('');
+    try {
+      const result = await authAPI.verifyPin(adminPin);
+      if (!result?.ok) {
+        setAdvanceError(result?.error || 'Invalid admin PIN');
+        return;
+      }
+      setAdvanceUnlocked(true);
+      setAdminPin('');
+      const keys = FIELDS.advance.map((f) => f.key);
+      const loaded = {};
+      await Promise.all(
+        keys.map(async (key) => {
+          loaded[key] = await settingsAPI.get(key);
+        }),
+      );
+      setValues((v) => ({ ...v, ...loaded }));
+    } catch (e) {
+      setAdvanceError(e.message || 'Unlock failed');
+    }
+  }
+
+  async function lockAdvanceSetting() {
+    try {
+      await authAPI.lockAdvanced();
+    } catch (_e) {
+      /* ignore */
+    }
+    setAdvanceUnlocked(false);
+    setAdminPin('');
+    setAdvanceError('');
+    setValues((v) => {
+      const next = { ...v };
+      for (const f of FIELDS.advance) {
+        delete next[f.key];
+      }
+      return next;
+    });
   }
 
   async function testDevice(type) {
@@ -289,21 +413,23 @@ export default function Settings() {
         ))}
 
         <div className="mt-4 pt-4 border-t border-slate-800 space-y-3 text-sm">
+          <h3 className="text-slate-300 font-medium">Local database backup</h3>
           <p className="text-slate-400">
-            Last backup:{' '}
+            Last local backup:{' '}
             <span className="text-slate-200">
               {lastBackup ? new Date(lastBackup).toLocaleString('en-IN') : 'Never'}
             </span>
           </p>
           <button
             type="button"
-            className="btn-primary"
+            className="btn-ghost text-xs"
             disabled={backupBusy}
             onClick={async () => {
               setBackupBusy(true);
               try {
-                await backupAPI.manualBackup();
+                await backupAPI.manualLocalBackup();
                 await refreshBackup();
+                setCloudMessage('Local backup saved');
               } catch (e) {
                 alert(e.message);
               } finally {
@@ -311,7 +437,7 @@ export default function Settings() {
               }
             }}
           >
-            {backupBusy ? 'Backing up…' : 'Backup now'}
+            {backupBusy ? 'Working…' : 'Local backup now'}
           </button>
           {backups.length > 0 && (
             <ul className="max-h-32 overflow-auto rounded border border-slate-800 divide-y divide-slate-800">
@@ -324,6 +450,173 @@ export default function Settings() {
                 </li>
               ))}
             </ul>
+          )}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-slate-800 space-y-3 text-sm">
+          <h3 className="text-slate-300 font-medium">Cloud backup (AWS S3)</h3>
+          <p className="text-slate-400 text-xs">
+            Uploads database (gzip), reports, and images when internet is available. Enter your AWS
+            credentials below — settings are saved on this computer.
+          </p>
+          {FIELDS.s3.map((f) => {
+            if (f.key === 'AWS_SECRET_ACCESS_KEY') {
+              return (
+                <label key={f.key} className="block text-sm mb-3">
+                  <span className="text-slate-400">{f.label}</span>
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      type={showAwsSecret ? 'text' : 'password'}
+                      className="field-input flex-1"
+                      value={values[f.key] ?? ''}
+                      onChange={(e) => update(f.key, e.target.value)}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs"
+                      onClick={() => setShowAwsSecret((s) => !s)}
+                    >
+                      {showAwsSecret ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  {errors[f.key] && <p className="text-xs text-red-400 mt-1">{errors[f.key]}</p>}
+                </label>
+              );
+            }
+            return (
+              <SettingRow
+                key={f.key}
+                field={f}
+                value={values[f.key] ?? ''}
+                error={errors[f.key]}
+                onChange={(v) => update(f.key, v)}
+              />
+            );
+          })}
+          {cloudStatus && (
+            <p className="text-slate-400">
+              S3:{' '}
+              <span className={cloudStatus.configured ? 'text-emerald-400' : 'text-amber-400'}>
+                {cloudStatus.configured ? 'Configured' : 'Not configured'}
+              </span>
+              {cloudStatus.configured && (
+                <>
+                  {' '}
+                  · Pending uploads: <span className="text-slate-200">{cloudStatus.pending ?? 0}</span>
+                  {cloudStatus.lastCloudBackup && (
+                    <>
+                      {' '}
+                      · Last cloud backup:{' '}
+                      <span className="text-slate-200">
+                        {new Date(cloudStatus.lastCloudBackup).toLocaleString('en-IN')}
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
+            </p>
+          )}
+          {cloudProgress && (
+            <p className="text-xs text-brand-300 animate-pulse">{cloudProgress}</p>
+          )}
+          {cloudMessage && !cloudProgress && (
+            <p className="text-xs text-slate-300">{cloudMessage}</p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={backupBusy || !cloudStatus?.configured}
+              onClick={async () => {
+                setBackupBusy(true);
+                setCloudMessage(null);
+                setCloudProgress('Starting cloud backup…');
+                try {
+                  const r = await backupAPI.manualBackup();
+                  if (r?.skipped) {
+                    setCloudMessage('No internet — will retry automatically');
+                  } else if (r?.ok === false) {
+                    setCloudMessage(r.error || r.reason || 'Backup failed');
+                  }
+                  await refreshBackup();
+                } catch (e) {
+                  setCloudMessage(e.message);
+                } finally {
+                  setBackupBusy(false);
+                  setCloudProgress(null);
+                }
+              }}
+            >
+              {backupBusy ? 'Backing up…' : 'Backup now'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={restoreBusy || !cloudStatus?.configured}
+              onClick={async () => {
+                setShowRestore(true);
+                setRestoreBusy(true);
+                try {
+                  await refreshRemoteBackups();
+                } catch (e) {
+                  alert(e.message);
+                } finally {
+                  setRestoreBusy(false);
+                }
+              }}
+            >
+              Restore backup
+            </button>
+          </div>
+          {showRestore && (
+            <div className="rounded border border-slate-700 bg-slate-900/50 p-3 space-y-2">
+              <p className="text-xs text-slate-400">
+                Select a database backup from S3. The app will restart after restore.
+              </p>
+              {remoteBackups.length === 0 ? (
+                <p className="text-xs text-slate-500">No remote backups found (check internet / AWS).</p>
+              ) : (
+                <ul className="max-h-40 overflow-auto divide-y divide-slate-800">
+                  {remoteBackups.map((b) => (
+                    <li key={b.key} className="flex justify-between items-center gap-2 py-2 text-xs">
+                      <span className="font-mono text-slate-300 truncate">{b.filename}</span>
+                      <button
+                        type="button"
+                        className="text-brand-300 shrink-0"
+                        disabled={restoreBusy}
+                        onClick={async () => {
+                          if (
+                            !window.confirm(
+                              `Restore ${b.filename}? Current database will be replaced and the app will restart.`,
+                            )
+                          ) {
+                            return;
+                          }
+                          setRestoreBusy(true);
+                          try {
+                            await backupAPI.restoreBackup(b.key);
+                          } catch (e) {
+                            alert(e.message);
+                            setRestoreBusy(false);
+                          }
+                        }}
+                      >
+                        Restore
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                onClick={() => setShowRestore(false)}
+              >
+                Close
+              </button>
+            </div>
           )}
         </div>
 
@@ -372,6 +665,52 @@ export default function Settings() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+      </Card>
+
+      <Card title="Advance Setting">
+        {!advanceUnlocked ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 max-w-xs">
+              <input
+                type="password"
+                className="field-input flex-1 text-sm"
+                value={adminPin}
+                onChange={(e) => setAdminPin(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && unlockAdvanceSetting()}
+                aria-label="Admin PIN"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button type="button" className="btn-ghost text-xs shrink-0" onClick={unlockAdvanceSetting}>
+                Unlock
+              </button>
+            </div>
+            {advanceError && <p className="text-xs text-red-400">{advanceError}</p>}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-emerald-400/90 mb-2">Unlocked — admin session active</p>
+            {FIELDS.advance.map((f) => (
+              <SettingRow
+                key={f.key}
+                field={f}
+                value={values[f.key] ?? ''}
+                error={errors[f.key]}
+                onChange={(v) => update(f.key, v)}
+              />
+            ))}
+            <p className="text-xs text-slate-500 mt-3">
+              Adds extra kg to the filled truck (gross) only — empty truck (tare) is unchanged. Shows
+              on screen and in reports after Save. Toggle off applies immediately without restart.
+            </p>
+            {advanceMessage && (
+              <p className="text-xs text-brand-300 mt-2">{advanceMessage}</p>
+            )}
+            <button type="button" className="btn-ghost mt-3 text-sm" onClick={lockAdvanceSetting}>
+              Lock section
+            </button>
           </div>
         )}
       </Card>

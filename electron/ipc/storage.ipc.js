@@ -10,7 +10,10 @@ const BackupService = require('../../backend/services/BackupService');
 const NAMESPACE = 'storage';
 
 function register(ipcMain) {
-  ipcMain.handle(`${NAMESPACE}:getStorageStats`, async () => getStorageStats());
+  ipcMain.handle(`${NAMESPACE}:getStorageStats`, async () => {
+    const { getStorageStatsAsync } = require('../../backend/utils/fileStorage');
+    return getStorageStatsAsync();
+  });
 
   ipcMain.handle(`${NAMESPACE}:runCleanup`, async () => {
     const days = parseInt(SettingsService.get('IMAGE_RETENTION_DAYS') || '90', 10);
